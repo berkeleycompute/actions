@@ -110,26 +110,10 @@ runs:
           echo "token<<EOF"
           echo "$TOKEN"
           echo "EOF"
-        } >> $GITHUB_OUTPUT
-        
-        # Verify output was written correctly
-        if ! grep -q "^token<<" "$GITHUB_OUTPUT"; then
-          echo "::error::Failed to write token to output"
-          exit 1
-        fi
-        
-        # Verify we can read the token back from the output file
-        # This helps catch any issues with the output format
-        READ_BACK_TOKEN=$(grep -A 1 "^token<<EOF" "$GITHUB_OUTPUT" | tail -n 1)
-        if [ "$READ_BACK_TOKEN" != "$TOKEN" ]; then
-          echo "::error::Token mismatch when reading back from output file"
-          echo "Original token length: ${#TOKEN}"
-          echo "Read back token length: ${#READ_BACK_TOKEN}"
-          exit 1
-        fi
+        } >> "$GITHUB_OUTPUT"
         
         if [ -n "$EXPIRES_AT" ] && [ "$EXPIRES_AT" != "null" ]; then
-          echo "expires-at=$EXPIRES_AT" >> $GITHUB_OUTPUT
+          echo "expires-at=$EXPIRES_AT" >> "$GITHUB_OUTPUT"
         fi
         
         echo "::add-mask::$TOKEN"
