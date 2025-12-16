@@ -97,22 +97,18 @@ runs:
           exit 1
         fi
         
-        # Verify GITHUB_OUTPUT exists
-        if [ -z "$GITHUB_OUTPUT" ]; then
-          echo "::error::GITHUB_OUTPUT environment variable is not set"
-          exit 1
-        fi
-        
-        # Mask the token first to prevent exposure
-        echo "::add-mask::$TOKEN"
-        
-        # Save to outputs - use simple format for composite actions
-        echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+        # Save to outputs
+        {
+          echo "token<<EOF"
+          echo "$TOKEN"
+          echo "EOF"
+        } >> $GITHUB_OUTPUT
         
         if [ -n "$EXPIRES_AT" ] && [ "$EXPIRES_AT" != "null" ]; then
-          echo "expires-at=$EXPIRES_AT" >> "$GITHUB_OUTPUT"
+          echo "expires-at=$EXPIRES_AT" >> $GITHUB_OUTPUT
         fi
         
+        echo "::add-mask::$TOKEN"
         echo "✅ Successfully generated installation access token"
         echo "Token length: ${#TOKEN} characters"
         if [ -n "$EXPIRES_AT" ] && [ "$EXPIRES_AT" != "null" ]; then
