@@ -125,34 +125,22 @@ runs:
         # In composite actions, outputs must be written to $GITHUB_OUTPUT
         echo "Saving JWT token to output..."
         
-        # Write output using multiline format with unique delimiter
-        # Format: output-name<<DELIMITER\nvalue\nDELIMITER
-        # Use a unique delimiter to avoid conflicts
-        # Important: The delimiter must be on its own line at the end
+        # Write output using multiline format (same format as get-installation-token)
+        # Format: output-name<<EOF\nvalue\nEOF
+        # This format works in other composite actions, so we'll use it here too
         {
-          echo "jwt-token<<JWT_TOKEN_END"
-          printf '%s\n' "$JWT_TOKEN"
-          echo "JWT_TOKEN_END"
+          echo "jwt-token<<EOF"
+          echo "$JWT_TOKEN"
+          echo "EOF"
         } >> "$GITHUB_OUTPUT"
         
-        # Verify output was written (check for the start of the output line)
+        # Verify output was written
         if ! grep -q "^jwt-token<<" "$GITHUB_OUTPUT"; then
           echo "::error::Failed to write JWT token to output"
-          echo "Debug: GITHUB_OUTPUT file exists: $([ -f "$GITHUB_OUTPUT" ] && echo 'yes' || echo 'no')"
-          exit 1
-        fi
-        
-        # Additional verification: check that the delimiter is present
-        if ! grep -q "^JWT_TOKEN_END$" "$GITHUB_OUTPUT"; then
-          echo "::error::Output delimiter not found in GITHUB_OUTPUT"
-          echo "Debug: Last 3 lines of GITHUB_OUTPUT:"
-          tail -3 "$GITHUB_OUTPUT" || true
           exit 1
         fi
         
         echo "✅ JWT token written to output successfully"
-        echo "Debug: Output file size: $(wc -c < "$GITHUB_OUTPUT") bytes"
-        echo "Debug: Output file lines: $(wc -l < "$GITHUB_OUTPUT") lines"
         
         echo "::add-mask::$JWT_TOKEN"
         echo ""
