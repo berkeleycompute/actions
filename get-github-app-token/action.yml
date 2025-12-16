@@ -23,6 +23,8 @@ runs:
       run: |
         set -e
         
+        echo "🔍 DEBUG: Running get-github-app-token action (commit: 120822f - 2024-12-16)"
+        
         # Install required tools
         if ! command -v jq &> /dev/null; then
           sudo apt-get update && sudo apt-get install -y jq
@@ -98,11 +100,20 @@ runs:
         fi
         
         # Save to outputs
+        echo "🔍 DEBUG: Writing token to GITHUB_OUTPUT: $GITHUB_OUTPUT"
+        echo "🔍 DEBUG: Token value present: ${#TOKEN} characters"
         {
           echo "token<<EOF"
           echo "$TOKEN"
           echo "EOF"
         } >> $GITHUB_OUTPUT
+        
+        echo "🔍 DEBUG: Verifying output was written..."
+        if grep -q "^token<<EOF" "$GITHUB_OUTPUT"; then
+          echo "✅ DEBUG: token<<EOF found in output file"
+        else
+          echo "❌ DEBUG: token<<EOF NOT found in output file"
+        fi
         
         if [ -n "$EXPIRES_AT" ] && [ "$EXPIRES_AT" != "null" ]; then
           echo "expires-at=$EXPIRES_AT" >> $GITHUB_OUTPUT
