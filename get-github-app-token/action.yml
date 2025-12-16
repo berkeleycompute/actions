@@ -13,12 +13,15 @@ inputs:
 outputs:
   token:
     description: 'Installation access token'
+    value: ${{ steps.generate-token.outputs.token }}
   expires-at:
     description: 'Token expiration timestamp'
+    value: ${{ steps.generate-token.outputs.expires-at }}
 runs:
   using: 'composite'
   steps:
     - name: Generate JWT and get installation token
+      id: generate-token
       shell: bash
       run: |
         set -e
