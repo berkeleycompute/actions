@@ -1,0 +1,62 @@
+name: 'Update Organization Secret'
+description: 'Update or create an organization secret using a GitHub App installation token'
+inputs:
+  token:
+    description: 'GitHub App installation access token'
+    required: true
+  organization:
+    description: 'Organization name'
+    required: true
+  secret-name:
+    description: 'Name of the secret to update'
+    required: true
+  secret-value:
+    description: 'Value to set for the secret'
+    required: true
+outputs:
+  success:
+    description: 'Whether the secret was updated successfully'
+  secret-name:
+    description: 'Name of the secret that was updated'
+runs:
+  using: 'composite'
+  steps:
+    - name: Update organization secret
+      shell: bash
+      run: |
+        # Install GitHub CLI if not available
+        if ! command -v gh &> /dev/null; then
+          echo "Installing GitHub CLI..."
+          type -p curl >/dev/null || (sudo apt-get update && sudo apt-get install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y gh
+        fi
+        
+        APP_TOKEN="${{ inputs.token }}"
+        ORG_NAME="${{ inputs.organization }}"
+        SECRET_NAME="${{ inputs.secret-name }}"
+        SECRET_VALUE="${{ inputs.secret-value }}"
+        
+        # Unset default GITHUB_TOKEN to prevent GitHub CLI from using it
+        unset GITHUB_TOKEN
+        
+        # Authenticate GitHub CLI with the App token
+        echo "$APP_TOKEN" | gh auth login --with-token
+        
+        # Update organization secret
+        echo "$SECRET_VALUE" | gh secret set "$SECRET_NAME" --org "$ORG_NAME"
+        
+        UPDATE_EXIT_CODE=$?
+        if [ $UPDATE_EXIT_CODE -eq 0 ]; then
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "secret-name=$SECRET_NAME" >> $GITHUB_OUTPUT
+          echo "✅ Successfully updated organization secret: $SECRET_NAME"
+        else
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "::error::Failed to update organization secret (exit code: $UPDATE_EXIT_CODE)"
+          echo "This requires the GitHub App token to have 'Administration: Read and write' permission."
+          exit 1
+        fi
+

@@ -1,0 +1,62 @@
+name: 'List Organization Secrets'
+description: 'List all organization secrets using a GitHub App installation token'
+inputs:
+  token:
+    description: 'GitHub App installation access token'
+    required: true
+  organization:
+    description: 'Organization name'
+    required: true
+outputs:
+  secrets-list:
+    description: 'JSON array of organization secrets'
+  secrets-count:
+    description: 'Number of secrets found'
+runs:
+  using: 'composite'
+  steps:
+    - name: List organization secrets
+      shell: bash
+      run: |
+        # Install GitHub CLI if not available
+        if ! command -v gh &> /dev/null; then
+          echo "Installing GitHub CLI..."
+          type -p curl >/dev/null || (sudo apt-get update && sudo apt-get install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y gh
+        fi
+        
+        APP_TOKEN="${{ inputs.token }}"
+        ORG_NAME="${{ inputs.organization }}"
+        
+        # Unset default GITHUB_TOKEN to prevent GitHub CLI from using it
+        unset GITHUB_TOKEN
+        
+        # Authenticate GitHub CLI with the App token
+        echo "$APP_TOKEN" | gh auth login --with-token
+        
+        # List organization secrets
+        SECRETS_LIST=$(gh secret list --org "$ORG_NAME" --json name,updatedAt 2>&1)
+        
+        if [ $? -eq 0 ]; then
+          SECRETS_COUNT=$(echo "$SECRETS_LIST" | jq -r 'length // 0')
+          
+          # Save to outputs
+          {
+            echo "secrets-list<<EOF"
+            echo "$SECRETS_LIST"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          
+          echo "secrets-count=$SECRETS_COUNT" >> $GITHUB_OUTPUT
+          
+          echo "✅ Successfully listed organization secrets"
+          echo "Found $SECRETS_COUNT secret(s) in organization '$ORG_NAME'"
+        else
+          echo "::error::Failed to list organization secrets"
+          echo "Error: $SECRETS_LIST"
+          exit 1
+        fi
+

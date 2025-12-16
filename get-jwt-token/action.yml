@@ -1,0 +1,75 @@
+name: 'Get GitHub App JWT Token'
+description: 'Generate a JWT token for GitHub App authentication'
+inputs:
+  app-id:
+    description: 'GitHub App ID'
+    required: true
+  private-key:
+    description: 'GitHub App private key (PEM format)'
+    required: true
+outputs:
+  jwt-token:
+    description: 'Generated JWT token for GitHub App authentication'
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate JWT token
+      shell: bash
+      run: |
+        # Install required tools
+        if ! command -v jq &> /dev/null; then
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+        if ! command -v openssl &> /dev/null; then
+          sudo apt-get update && sudo apt-get install -y openssl
+        fi
+        
+        APP_ID="${{ inputs.app-id }}"
+        PRIVATE_KEY="${{ inputs.private-key }}"
+        
+        # Generate JWT token
+        # JWT format: header.payload.signature
+        # Header: {"alg":"RS256","typ":"JWT"}
+        # Payload: {"iat":<timestamp>,"exp":<timestamp+10min>,"iss":<APP_ID>}
+        
+        NOW=$(date +%s)
+        EXP=$(($NOW + 600))  # 10 minutes from now
+        
+        HEADER='{"alg":"RS256","typ":"JWT"}'
+        # Payload: iss must be the App ID as a number, not a string
+        PAYLOAD=$(jq -n \
+          --argjson iat $NOW \
+          --argjson exp $EXP \
+          --argjson iss $APP_ID \
+          '{iat: $iat, exp: $exp, iss: ($iss | tonumber)}')
+        
+        # Base64 encode (URL-safe, no padding)
+        HEADER_B64=$(echo -n "$HEADER" | base64 | tr -d '\n=' | tr '/+' '_-')
+        PAYLOAD_B64=$(echo -n "$PAYLOAD" | base64 | tr -d '\n=' | tr '/+' '_-')
+        
+        # Create signature using the private key
+        SIGNATURE_INPUT="${HEADER_B64}.${PAYLOAD_B64}"
+        
+        # Write private key to temp file for openssl
+        TEMP_KEY=$(mktemp)
+        echo "$PRIVATE_KEY" > "$TEMP_KEY"
+        chmod 600 "$TEMP_KEY"
+        
+        # Sign and encode
+        SIGNATURE=$(echo -n "$SIGNATURE_INPUT" | openssl dgst -sha256 -sign "$TEMP_KEY" -binary | base64 | tr -d '\n=' | tr '/+' '_-')
+        
+        # Clean up
+        rm -f "$TEMP_KEY"
+        
+        JWT_TOKEN="${SIGNATURE_INPUT}.${SIGNATURE}"
+        
+        # Save to output
+        {
+          echo "jwt-token<<EOF"
+          echo "$JWT_TOKEN"
+          echo "EOF"
+        } >> $GITHUB_OUTPUT
+        
+        echo "::add-mask::$JWT_TOKEN"
+        echo "✅ JWT token generated successfully"
+
