@@ -31,11 +31,25 @@ runs:
         APP_TOKEN="${{ inputs.token }}"
         ORG_NAME="${{ inputs.organization }}"
         
+        # Verify token is provided
+        if [ -z "$APP_TOKEN" ]; then
+          echo "::error::Token is empty or not provided"
+          exit 1
+        fi
+        
         # Unset default GITHUB_TOKEN to prevent GitHub CLI from using it
         unset GITHUB_TOKEN
         
         # Authenticate GitHub CLI with the App token
-        echo "$APP_TOKEN" | gh auth login --with-token
+        echo "$APP_TOKEN" | gh auth login --with-token 2>&1
+        
+        # Verify authentication succeeded
+        if [ $? -ne 0 ]; then
+          echo "::error::Failed to authenticate with GitHub CLI"
+          echo "Token length: ${#APP_TOKEN} characters"
+          echo "Token preview: ${APP_TOKEN:0:20}... (first 20 chars)"
+          exit 1
+        fi
         
         # List organization secrets
         SECRETS_LIST=$(gh secret list --org "$ORG_NAME" --json name,updatedAt 2>&1)
