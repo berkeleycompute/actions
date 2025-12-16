@@ -122,18 +122,25 @@ runs:
         fi
         
         # Save to output using EOF delimiter to handle special characters
+        # In composite actions, outputs must be written to $GITHUB_OUTPUT
         echo "Saving JWT token to output..."
+        
+        # Write output using multiline format
+        # Format: output-name<<DELIMITER\nvalue\nDELIMITER
         {
           echo "jwt-token<<EOF"
           echo "$JWT_TOKEN"
           echo "EOF"
         } >> "$GITHUB_OUTPUT"
         
-        # Verify output was written
-        if ! grep -q "jwt-token" "$GITHUB_OUTPUT"; then
+        # Verify output was written (check for the start of the output line)
+        if ! grep -q "^jwt-token<<" "$GITHUB_OUTPUT"; then
           echo "::error::Failed to write JWT token to output"
+          echo "Debug: GITHUB_OUTPUT file exists: $([ -f "$GITHUB_OUTPUT" ] && echo 'yes' || echo 'no')"
           exit 1
         fi
+        
+        echo "✅ JWT token written to output successfully"
         
         echo "::add-mask::$JWT_TOKEN"
         echo ""
