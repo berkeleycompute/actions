@@ -10,12 +10,15 @@ inputs:
 outputs:
   token:
     description: 'Installation access token'
+    value: ${{ steps.get-installation-token.outputs.token }}
   expires-at:
     description: 'Token expiration timestamp'
+    value: ${{ steps.get-installation-token.outputs.expires-at }}
 runs:
   using: 'composite'
   steps:
     - name: Get installation access token
+      id: get-installation-token
       shell: bash
       run: |
         # Install required tools

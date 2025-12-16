@@ -16,12 +16,15 @@ inputs:
 outputs:
   success:
     description: 'Whether the secret was updated successfully'
+    value: ${{ steps.update-secret.outputs.success }}
   secret-name:
     description: 'Name of the secret that was updated'
+    value: ${{ steps.update-secret.outputs.secret-name }}
 runs:
   using: 'composite'
   steps:
     - name: Update organization secret
+      id: update-secret
       shell: bash
       run: |
         # Install GitHub CLI if not available

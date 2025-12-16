@@ -10,12 +10,15 @@ inputs:
 outputs:
   secrets-list:
     description: 'JSON array of organization secrets'
+    value: ${{ steps.list-secrets.outputs.secrets-list }}
   secrets-count:
     description: 'Number of secrets found'
+    value: ${{ steps.list-secrets.outputs.secrets-count }}
 runs:
   using: 'composite'
   steps:
     - name: List organization secrets
+      id: list-secrets
       shell: bash
       run: |
         # Install GitHub CLI if not available

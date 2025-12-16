@@ -10,10 +10,12 @@ inputs:
 outputs:
   jwt-token:
     description: 'Generated JWT token for GitHub App authentication'
+    value: ${{ steps.generate-jwt.outputs.jwt-token }}
 runs:
   using: 'composite'
   steps:
     - name: Generate JWT token
+      id: generate-jwt
       shell: bash
       run: |
         set -e  # Exit on error
