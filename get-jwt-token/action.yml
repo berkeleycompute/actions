@@ -37,11 +37,23 @@ runs:
         
         HEADER='{"alg":"RS256","typ":"JWT"}'
         # Payload: iss must be the App ID as a number, not a string
+        # Verify App ID is a valid number
+        if ! echo "$APP_ID" | grep -qE '^[0-9]+$'; then
+          echo "::error::App ID must be a number, got: $APP_ID"
+          exit 1
+        fi
+        
         PAYLOAD=$(jq -n \
           --argjson iat $NOW \
           --argjson exp $EXP \
           --argjson iss $APP_ID \
           '{iat: $iat, exp: $exp, iss: ($iss | tonumber)}')
+        
+        # Verify payload was created correctly
+        if [ -z "$PAYLOAD" ] || [ "$PAYLOAD" = "null" ]; then
+          echo "::error::Failed to create JWT payload"
+          exit 1
+        fi
         
         # Base64 encode (URL-safe, no padding)
         HEADER_B64=$(echo -n "$HEADER" | base64 | tr -d '\n=' | tr '/+' '_-')
@@ -63,7 +75,21 @@ runs:
         
         JWT_TOKEN="${SIGNATURE_INPUT}.${SIGNATURE}"
         
-        # Save to output
+        # Verify token format
+        TOKEN_PARTS=$(echo "$JWT_TOKEN" | tr -cd '.' | wc -c)
+        if [ "$TOKEN_PARTS" -ne 2 ]; then
+          echo "::error::JWT token format is incorrect (expected 3 parts, found $((TOKEN_PARTS + 1)))"
+          exit 1
+        fi
+        
+        # Debug info
+        echo "JWT Token generated:"
+        echo "  Length: ${#JWT_TOKEN} characters"
+        echo "  Format: Valid (3 parts separated by dots)"
+        echo "  First 50 chars: ${JWT_TOKEN:0:50}..."
+        echo "  Last 10 chars: ...${JWT_TOKEN: -10}"
+        
+        # Save to output using EOF delimiter to handle special characters
         {
           echo "jwt-token<<EOF"
           echo "$JWT_TOKEN"
@@ -71,5 +97,5 @@ runs:
         } >> $GITHUB_OUTPUT
         
         echo "::add-mask::$JWT_TOKEN"
-        echo "✅ JWT token generated successfully"
+        echo "✅ JWT token generated successfully and saved to output"
 
