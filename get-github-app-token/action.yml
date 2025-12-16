@@ -103,20 +103,16 @@ runs:
           exit 1
         fi
         
-        # Save to outputs using multiline format
-        # This format is required for values that may contain special characters
-        # Format: output-name<<EOF\nvalue\nEOF
-        {
-          echo "token<<EOF"
-          echo "$TOKEN"
-          echo "EOF"
-        } >> "$GITHUB_OUTPUT"
+        # Mask the token first to prevent exposure
+        echo "::add-mask::$TOKEN"
+        
+        # Save to outputs - use simple format for composite actions
+        echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
         
         if [ -n "$EXPIRES_AT" ] && [ "$EXPIRES_AT" != "null" ]; then
           echo "expires-at=$EXPIRES_AT" >> "$GITHUB_OUTPUT"
         fi
         
-        echo "::add-mask::$TOKEN"
         echo "✅ Successfully generated installation access token"
         echo "Token length: ${#TOKEN} characters"
         if [ -n "$EXPIRES_AT" ] && [ "$EXPIRES_AT" != "null" ]; then
