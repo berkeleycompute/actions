@@ -35,6 +35,8 @@ runs:
   steps:
     - name: Update AWS secret
       id: update-secret
+      env:
+        SECRET_VALUE: ${{ inputs.secret-value }}
       shell: bash
       run: |
         set -e
@@ -63,7 +65,7 @@ runs:
         AWS_SECRET_ACCESS_KEY="${{ inputs.aws-secret-access-key }}"
         AWS_REGION="${{ inputs.aws-region }}"
         SECRET_ARN="${{ inputs.secret-arn }}"
-        SECRET_VALUE="${{ inputs.secret-value }}"
+        # SECRET_VALUE is set via env: above to avoid shell parsing issues with JSON/double quotes
         
         # Validate environment parameter
         echo ""
