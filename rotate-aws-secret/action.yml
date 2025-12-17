@@ -1,0 +1,236 @@
+name: 'Rotate AWS Secret'
+description: 'Automatically generate a new secure value and update an AWS Secrets Manager secret'
+inputs:
+  environment:
+    description: 'Environment to use (dev, devops, prod, or stage) - determines which AWS credentials to use'
+    required: true
+  aws-access-key-id:
+    description: 'AWS Access Key ID (use secrets.AWS_ACCESS_KEY_<ENV>)'
+    required: true
+  aws-secret-access-key:
+    description: 'AWS Secret Access Key (use secrets.AWS_SECRET_KEY_<ENV>)'
+    required: true
+  aws-region:
+    description: 'AWS Region'
+    required: false
+    default: 'us-east-1'
+  secret-arn:
+    description: 'ARN of the AWS secret to rotate'
+    required: true
+  secret-length:
+    description: 'Length of the generated secret (default: 32)'
+    required: false
+    default: '32'
+  secret-type:
+    description: 'Type of secret to generate: alphanumeric, base64, or hex (default: alphanumeric)'
+    required: false
+    default: 'alphanumeric'
+  include-special-chars:
+    description: 'Include special characters in alphanumeric secrets (default: true)'
+    required: false
+    default: 'true'
+outputs:
+  success:
+    description: 'Whether the secret was rotated successfully'
+    value: ${{ steps.rotate-secret.outputs.success }}
+  secret-arn:
+    description: 'ARN of the secret that was rotated'
+    value: ${{ steps.rotate-secret.outputs.secret-arn }}
+  version-id:
+    description: 'Version ID of the rotated secret'
+    value: ${{ steps.rotate-secret.outputs.version-id }}
+  new-secret-value:
+    description: 'The newly generated secret value (masked in logs)'
+    value: ${{ steps.rotate-secret.outputs.new-secret-value }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Rotate AWS secret
+      id: rotate-secret
+      shell: bash
+      run: |
+        set -e
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Rotating AWS Secrets Manager Secret"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # Install AWS CLI if not available
+        if ! command -v aws &> /dev/null; then
+          echo "Installing AWS CLI..."
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+          rm -rf awscliv2.zip aws
+        fi
+        
+        # Install jq if not available
+        if ! command -v jq &> /dev/null; then
+          echo "Installing jq..."
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+        
+        ENVIRONMENT="${{ inputs.environment }}"
+        AWS_ACCESS_KEY_ID="${{ inputs.aws-access-key-id }}"
+        AWS_SECRET_ACCESS_KEY="${{ inputs.aws-secret-access-key }}"
+        AWS_REGION="${{ inputs.aws-region }}"
+        SECRET_ARN="${{ inputs.secret-arn }}"
+        SECRET_LENGTH="${{ inputs.secret-length }}"
+        SECRET_TYPE="${{ inputs.secret-type }}"
+        INCLUDE_SPECIAL="${{ inputs.include-special-chars }}"
+        
+        # Validate environment parameter
+        echo ""
+        echo "Input validation:"
+        if [ -z "$ENVIRONMENT" ]; then
+          echo "::error::Environment is empty or not set"
+          exit 1
+        fi
+        
+        # Validate environment is one of the allowed values
+        case "$ENVIRONMENT" in
+          dev|devops|prod|stage)
+            echo "  ✓ Environment: $ENVIRONMENT"
+            ;;
+          *)
+            echo "::error::Invalid environment '$ENVIRONMENT'. Must be one of: dev, devops, prod, stage"
+            exit 1
+            ;;
+        esac
+        
+        # Convert environment to uppercase for logging
+        ENV_UPPER=$(echo "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')
+        
+        # Validate AWS credentials
+        if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+          echo "::error::AWS Access Key ID is empty or not set"
+          echo "Make sure you're passing secrets.AWS_ACCESS_KEY_${ENV_UPPER}"
+          exit 1
+        fi
+        echo "  ✓ AWS Access Key ID: Set (length: ${#AWS_ACCESS_KEY_ID})"
+        
+        if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+          echo "::error::AWS Secret Access Key is empty or not set"
+          echo "Make sure you're passing secrets.AWS_SECRET_KEY_${ENV_UPPER}"
+          exit 1
+        fi
+        echo "  ✓ AWS Secret Access Key: Set (length: ${#AWS_SECRET_ACCESS_KEY} characters)"
+        
+        if [ -z "$SECRET_ARN" ]; then
+          echo "::error::Secret ARN is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ Secret ARN: $SECRET_ARN"
+        echo "  ✓ AWS Region: $AWS_REGION"
+        echo "  ✓ Secret Length: $SECRET_LENGTH characters"
+        echo "  ✓ Secret Type: $SECRET_TYPE"
+        echo ""
+        
+        # Validate secret length
+        if ! [[ "$SECRET_LENGTH" =~ ^[0-9]+$ ]] || [ "$SECRET_LENGTH" -lt 8 ] || [ "$SECRET_LENGTH" -gt 256 ]; then
+          echo "::error::Secret length must be a number between 8 and 256"
+          exit 1
+        fi
+        
+        # Validate secret type
+        case "$SECRET_TYPE" in
+          alphanumeric|base64|hex)
+            echo "Generating $SECRET_TYPE secret..."
+            ;;
+          *)
+            echo "::error::Invalid secret type '$SECRET_TYPE'. Must be one of: alphanumeric, base64, hex"
+            exit 1
+            ;;
+        esac
+        
+        # Configure AWS credentials
+        export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
+        export AWS_DEFAULT_REGION="$AWS_REGION"
+        
+        # Generate new secret value based on type
+        case "$SECRET_TYPE" in
+          alphanumeric)
+            if [ "$INCLUDE_SPECIAL" = "true" ]; then
+              # Alphanumeric with special characters
+              NEW_SECRET=$(openssl rand -base64 $((SECRET_LENGTH * 2)) | tr -dc 'A-Za-z0-9!@#$%^&*()_+-=[]{}|;:,.<>?' | head -c $SECRET_LENGTH)
+            else
+              # Alphanumeric only
+              NEW_SECRET=$(openssl rand -base64 $((SECRET_LENGTH * 2)) | tr -dc 'A-Za-z0-9' | head -c $SECRET_LENGTH)
+            fi
+            ;;
+          base64)
+            NEW_SECRET=$(openssl rand -base64 $SECRET_LENGTH | head -c $SECRET_LENGTH)
+            ;;
+          hex)
+            NEW_SECRET=$(openssl rand -hex $((SECRET_LENGTH / 2)) | head -c $SECRET_LENGTH)
+            ;;
+        esac
+        
+        # Verify secret was generated
+        if [ -z "$NEW_SECRET" ] || [ ${#NEW_SECRET} -ne $SECRET_LENGTH ]; then
+          echo "::error::Failed to generate secret of correct length"
+          echo "Generated length: ${#NEW_SECRET}, Expected: $SECRET_LENGTH"
+          exit 1
+        fi
+        
+        echo "✓ Generated new secret value (length: ${#NEW_SECRET})"
+        
+        # Mask the new secret in logs
+        echo "::add-mask::$NEW_SECRET"
+        echo "::add-mask::$AWS_ACCESS_KEY_ID"
+        echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+        
+        # Update the secret in AWS
+        echo ""
+        echo "Updating secret in AWS Secrets Manager..."
+        
+        RESPONSE=$(aws secretsmanager put-secret-value \
+          --secret-id "$SECRET_ARN" \
+          --secret-string "$NEW_SECRET" \
+          --region "$AWS_REGION" \
+          --output json 2>&1) || UPDATE_EXIT_CODE=$?
+        
+        if [ ${UPDATE_EXIT_CODE:-0} -eq 0 ]; then
+          # Parse response
+          VERSION_ID=$(echo "$RESPONSE" | jq -r '.VersionId // empty')
+          SECRET_ARN_RESPONSE=$(echo "$RESPONSE" | jq -r '.ARN // empty')
+          
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "secret-arn=$SECRET_ARN_RESPONSE" >> $GITHUB_OUTPUT
+          
+          # Save the new secret value to output (masked)
+          {
+            echo "new-secret-value<<EOF"
+            echo "$NEW_SECRET"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          
+          if [ -n "$VERSION_ID" ] && [ "$VERSION_ID" != "null" ]; then
+            echo "version-id=$VERSION_ID" >> $GITHUB_OUTPUT
+            echo "  ✓ Version ID: $VERSION_ID"
+          fi
+          
+          echo ""
+          echo "✅ Successfully rotated AWS secret"
+          echo "  Secret ARN: $SECRET_ARN_RESPONSE"
+          echo "  New secret length: ${#NEW_SECRET} characters"
+          echo "  Secret type: $SECRET_TYPE"
+          echo ""
+          echo "⚠️  IMPORTANT: The new secret value is available in the 'new-secret-value' output"
+          echo "    Use it to update other services that depend on this secret."
+        else
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "::error::Failed to rotate AWS secret"
+          echo "Error response: $RESPONSE"
+          echo ""
+          echo "Common issues:"
+          echo "  - Invalid AWS credentials"
+          echo "  - Insufficient IAM permissions (needs secretsmanager:PutSecretValue)"
+          echo "  - Secret ARN does not exist or is in a different region"
+          echo "  - Secret is scheduled for deletion"
+          exit 1
+        fi
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
