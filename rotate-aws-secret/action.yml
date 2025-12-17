@@ -160,7 +160,7 @@ runs:
             fi
             ;;
           base64)
-            NEW_SECRET=$(openssl rand -base64 $SECRET_LENGTH | head -c $SECRET_LENGTH)
+            NEW_SECRET=$(openssl rand -base64 $SECRET_LENGTH | tr -d '\n' | head -c $SECRET_LENGTH)
             ;;
           hex)
             NEW_SECRET=$(openssl rand -hex $(((SECRET_LENGTH + 1) / 2)) | head -c $SECRET_LENGTH)
