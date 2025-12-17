@@ -1,0 +1,171 @@
+name: 'Update AWS Secret'
+description: 'Update a secret in AWS Secrets Manager'
+inputs:
+  environment:
+    description: 'Environment to use (dev, devops, prod, or stage) - determines which AWS credentials to use'
+    required: true
+  aws-access-key-id:
+    description: 'AWS Access Key ID (use secrets.AWS_ACCESS_KEY_<ENV>)'
+    required: true
+  aws-secret-access-key:
+    description: 'AWS Secret Access Key (use secrets.AWS_SECRET_KEY_<ENV>)'
+    required: true
+  aws-region:
+    description: 'AWS Region'
+    required: false
+    default: 'us-east-1'
+  secret-arn:
+    description: 'ARN of the AWS secret to update'
+    required: true
+  secret-value:
+    description: 'Value to set for the secret (can be plaintext or JSON)'
+    required: true
+outputs:
+  success:
+    description: 'Whether the secret was updated successfully'
+    value: ${{ steps.update-secret.outputs.success }}
+  secret-arn:
+    description: 'ARN of the secret that was updated'
+    value: ${{ steps.update-secret.outputs.secret-arn }}
+  version-id:
+    description: 'Version ID of the updated secret'
+    value: ${{ steps.update-secret.outputs.version-id }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Update AWS secret
+      id: update-secret
+      env:
+        SECRET_VALUE: ${{ inputs.secret-value }}
+      shell: bash
+      run: |
+        set -e
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Updating AWS Secrets Manager Secret"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # Install AWS CLI if not available
+        if ! command -v aws &> /dev/null; then
+          echo "Installing AWS CLI..."
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+          rm -rf awscliv2.zip aws
+        fi
+        
+        # Install jq if not available
+        if ! command -v jq &> /dev/null; then
+          echo "Installing jq..."
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+        
+        ENVIRONMENT="${{ inputs.environment }}"
+        AWS_ACCESS_KEY_ID="${{ inputs.aws-access-key-id }}"
+        AWS_SECRET_ACCESS_KEY="${{ inputs.aws-secret-access-key }}"
+        AWS_REGION="${{ inputs.aws-region }}"
+        SECRET_ARN="${{ inputs.secret-arn }}"
+        # SECRET_VALUE is set via env: above to avoid shell parsing issues with JSON/double quotes
+        
+        # Validate environment parameter
+        echo ""
+        echo "Input validation:"
+        if [ -z "$ENVIRONMENT" ]; then
+          echo "::error::Environment is empty or not set"
+          exit 1
+        fi
+        
+        # Validate environment is one of the allowed values
+        case "$ENVIRONMENT" in
+          dev|devops|prod|stage)
+            echo "  ✓ Environment: $ENVIRONMENT"
+            ;;
+          *)
+            echo "::error::Invalid environment '$ENVIRONMENT'. Must be one of: dev, devops, prod, stage"
+            exit 1
+            ;;
+        esac
+        
+        # Convert environment to uppercase for logging
+        ENV_UPPER=$(echo "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')
+        
+        # Validate AWS credentials
+        if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+          echo "::error::AWS Access Key ID is empty or not set"
+          echo "Make sure you're passing secrets.AWS_ACCESS_KEY_${ENV_UPPER}"
+          exit 1
+        fi
+        echo "  ✓ AWS Access Key ID: Set (length: ${#AWS_ACCESS_KEY_ID})"
+        
+        if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+          echo "::error::AWS Secret Access Key is empty or not set"
+          echo "Make sure you're passing secrets.AWS_SECRET_KEY_${ENV_UPPER}"
+          exit 1
+        fi
+        echo "  ✓ AWS Secret Access Key: Set (length: ${#AWS_SECRET_ACCESS_KEY} characters)"
+        
+        if [ -z "$SECRET_ARN" ]; then
+          echo "::error::Secret ARN is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ Secret ARN: $SECRET_ARN"
+        
+        if [ -z "$SECRET_VALUE" ]; then
+          echo "::error::Secret value is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ Secret value: Set (length: ${#SECRET_VALUE} characters)"
+        echo "  ✓ AWS Region: $AWS_REGION"
+        echo ""
+        
+        # Configure AWS credentials
+        export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
+        export AWS_DEFAULT_REGION="$AWS_REGION"
+        
+        # Mask sensitive values in logs
+        echo "::add-mask::$AWS_ACCESS_KEY_ID"
+        echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+        echo "::add-mask::$SECRET_VALUE"
+        
+        # Try to update the secret
+        echo "Updating secret in AWS Secrets Manager..."
+        
+        # Use put-secret-value to update the secret
+        RESPONSE=$(aws secretsmanager put-secret-value \
+          --secret-id "$SECRET_ARN" \
+          --secret-string "$SECRET_VALUE" \
+          --region "$AWS_REGION" \
+          --output json 2>&1) || UPDATE_EXIT_CODE=$?
+        
+        if [ ${UPDATE_EXIT_CODE:-0} -eq 0 ]; then
+          # Parse response
+          VERSION_ID=$(echo "$RESPONSE" | jq -r '.VersionId // empty')
+          SECRET_ARN_RESPONSE=$(echo "$RESPONSE" | jq -r '.ARN // empty')
+          
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "secret-arn=$SECRET_ARN_RESPONSE" >> $GITHUB_OUTPUT
+          
+          if [ -n "$VERSION_ID" ] && [ "$VERSION_ID" != "null" ]; then
+            echo "version-id=$VERSION_ID" >> $GITHUB_OUTPUT
+            echo "  ✓ Version ID: $VERSION_ID"
+          fi
+          
+          echo ""
+          echo "✅ Successfully updated AWS secret"
+          echo "  Secret ARN: $SECRET_ARN_RESPONSE"
+        else
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "::error::Failed to update AWS secret"
+          echo "Error response: $RESPONSE"
+          echo ""
+          echo "Common issues:"
+          echo "  - Invalid AWS credentials"
+          echo "  - Insufficient IAM permissions (needs secretsmanager:PutSecretValue)"
+          echo "  - Secret ARN does not exist or is in a different region"
+          echo "  - Secret is scheduled for deletion"
+          exit 1
+        fi
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
