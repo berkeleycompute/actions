@@ -152,8 +152,20 @@ runs:
         case "$SECRET_TYPE" in
           alphanumeric)
             if [ "$INCLUDE_SPECIAL" = "true" ]; then
-              # Alphanumeric with special characters
-              NEW_SECRET=$(openssl rand -base64 $((SECRET_LENGTH * 2)) | tr -dc 'A-Za-z0-9!@#$%^&*()_+-=[]{}|;:,.<>?' | head -c $SECRET_LENGTH)
+              # Alphanumeric with special characters - use character mapping to ensure all chars are possible
+              # Define the character set as a string for indexing
+              CHAR_SET='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?'
+              CHAR_SET_LEN=${#CHAR_SET}
+              NEW_SECRET=""
+              # Generate random bytes and map them to character indices
+              while [ ${#NEW_SECRET} -lt $SECRET_LENGTH ]; do
+                # Get a random byte (0-255) and map it to our character set
+                RAND_BYTE=$(od -An -N1 -tu1 /dev/urandom | tr -d ' ')
+                # Use modulo to get index in character set
+                CHAR_INDEX=$((RAND_BYTE % CHAR_SET_LEN))
+                # Extract character at that index (bash substring: ${string:index:1})
+                NEW_SECRET="${NEW_SECRET}${CHAR_SET:$CHAR_INDEX:1}"
+              done
             else
               # Alphanumeric only
               NEW_SECRET=$(openssl rand -base64 $((SECRET_LENGTH * 2)) | tr -dc 'A-Za-z0-9' | head -c $SECRET_LENGTH)
