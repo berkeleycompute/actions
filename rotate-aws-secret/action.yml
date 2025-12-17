@@ -29,6 +29,9 @@ inputs:
     description: 'Include special characters in alphanumeric secrets (default: true)'
     required: false
     default: 'true'
+  secret-key:
+    description: 'Key name to update in JSON secret. The secret will be treated as JSON and only this key will be updated, preserving other keys.'
+    required: true
 outputs:
   success:
     description: 'Whether the secret was rotated successfully'
@@ -78,6 +81,13 @@ runs:
         SECRET_LENGTH="${{ inputs.secret-length }}"
         SECRET_TYPE="${{ inputs.secret-type }}"
         INCLUDE_SPECIAL="${{ inputs.include-special-chars }}"
+        SECRET_KEY="${{ inputs.secret-key }}"
+        
+        # Validate secret-key is provided
+        if [ -z "$SECRET_KEY" ]; then
+          echo "::error::Secret key is required. This action updates a specific key in a JSON secret."
+          exit 1
+        fi
         
         # Validate environment parameter
         echo ""
@@ -124,6 +134,7 @@ runs:
         echo "  ✓ AWS Region: $AWS_REGION"
         echo "  ✓ Secret Length: $SECRET_LENGTH characters"
         echo "  ✓ Secret Type: $SECRET_TYPE"
+        echo "  ✓ Secret Key (JSON): $SECRET_KEY (will update only this key in JSON)"
         echo ""
         
         # Validate secret length
@@ -193,13 +204,63 @@ runs:
         echo "::add-mask::$AWS_ACCESS_KEY_ID"
         echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
         
-        # Update the secret in AWS
+        # Always update a specific key in JSON secret
         echo ""
-        echo "Updating secret in AWS Secrets Manager..."
+        echo "Updating key '$SECRET_KEY' in JSON secret..."
+        echo "Process: Download JSON → Update key → Save JSON"
         
+        # Step 1: Get current secret value from AWS
+        echo ""
+        echo "Step 1: Retrieving current secret from AWS..."
+        CURRENT_SECRET_RESPONSE=$(aws secretsmanager get-secret-value \
+          --secret-id "$SECRET_ARN" \
+          --region "$AWS_REGION" \
+          --output json 2>&1) || {
+          echo "::error::Failed to retrieve current secret from AWS"
+          echo "$CURRENT_SECRET_RESPONSE"
+          exit 1
+        }
+        
+        CURRENT_SECRET_STRING=$(echo "$CURRENT_SECRET_RESPONSE" | jq -r '.SecretString // empty')
+        
+        if [ -z "$CURRENT_SECRET_STRING" ]; then
+          echo "::error::Current secret value is empty or not found"
+          exit 1
+        fi
+        
+        echo "✓ Retrieved current secret from AWS"
+        
+        # Step 2: Parse as JSON (or create new JSON if not valid)
+        echo ""
+        echo "Step 2: Parsing secret as JSON..."
+        if echo "$CURRENT_SECRET_STRING" | jq empty 2>/dev/null; then
+          echo "✓ Current secret is valid JSON"
+          SECRET_JSON="$CURRENT_SECRET_STRING"
+        else
+          echo "⚠️  Current secret is not valid JSON, creating new JSON structure"
+          SECRET_JSON="{}"
+        fi
+        
+        # Step 3: Update or create the key in JSON
+        echo ""
+        echo "Step 3: Updating key '$SECRET_KEY' in JSON..."
+        UPDATED_JSON=$(echo "$SECRET_JSON" | jq --arg key "$SECRET_KEY" --arg value "$NEW_SECRET" '.[$key] = $value')
+        
+        # Verify the update
+        UPDATED_VALUE=$(echo "$UPDATED_JSON" | jq -r --arg key "$SECRET_KEY" '.[$key] // empty')
+        if [ "$UPDATED_VALUE" != "$NEW_SECRET" ]; then
+          echo "::error::Failed to update key in JSON"
+          exit 1
+        fi
+        
+        echo "✓ Key '$SECRET_KEY' updated in JSON"
+        
+        # Step 4: Save the updated JSON back to AWS
+        echo ""
+        echo "Step 4: Saving updated JSON to AWS Secrets Manager..."
         RESPONSE=$(aws secretsmanager put-secret-value \
           --secret-id "$SECRET_ARN" \
-          --secret-string "$NEW_SECRET" \
+          --secret-string "$UPDATED_JSON" \
           --region "$AWS_REGION" \
           --output json 2>&1) || UPDATE_EXIT_CODE=$?
         
