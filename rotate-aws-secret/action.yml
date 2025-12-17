@@ -17,20 +17,11 @@ inputs:
   secret-arn:
     description: 'ARN of the AWS secret to rotate'
     required: true
-  secret-length:
-    description: 'Length of the generated secret (default: 32)'
-    required: false
-    default: '32'
-  secret-type:
-    description: 'Type of secret to generate: alphanumeric, base64, or hex (default: alphanumeric)'
-    required: false
-    default: 'alphanumeric'
-  include-special-chars:
-    description: 'Include special characters in alphanumeric secrets (default: true)'
-    required: false
-    default: 'true'
   secret-key:
     description: 'Key name to update in JSON secret. The secret will be treated as JSON and only this key will be updated, preserving other keys.'
+    required: true
+  new-secret-value:
+    description: 'The secret value to use for updating the JSON key. Must be provided by the caller.'
     required: true
 outputs:
   success:
@@ -78,10 +69,8 @@ runs:
         AWS_SECRET_ACCESS_KEY="${{ inputs.aws-secret-access-key }}"
         AWS_REGION="${{ inputs.aws-region }}"
         SECRET_ARN="${{ inputs.secret-arn }}"
-        SECRET_LENGTH="${{ inputs.secret-length }}"
-        SECRET_TYPE="${{ inputs.secret-type }}"
-        INCLUDE_SPECIAL="${{ inputs.include-special-chars }}"
         SECRET_KEY="${{ inputs.secret-key }}"
+        PROVIDED_SECRET_VALUE="${{ inputs.new-secret-value }}"
         
         # Validate secret-key is provided
         if [ -z "$SECRET_KEY" ]; then
@@ -132,72 +121,23 @@ runs:
         fi
         echo "  ✓ Secret ARN: $SECRET_ARN"
         echo "  ✓ AWS Region: $AWS_REGION"
-        echo "  ✓ Secret Length: $SECRET_LENGTH characters"
-        echo "  ✓ Secret Type: $SECRET_TYPE"
         echo "  ✓ Secret Key (JSON): $SECRET_KEY (will update only this key in JSON)"
         echo ""
         
-        # Validate secret length
-        if ! [[ "$SECRET_LENGTH" =~ ^[0-9]+$ ]] || [ "$SECRET_LENGTH" -lt 8 ] || [ "$SECRET_LENGTH" -gt 256 ]; then
-          echo "::error::Secret length must be a number between 8 and 256"
+        # Validate new-secret-value is provided
+        if [ -z "$PROVIDED_SECRET_VALUE" ]; then
+          echo "::error::new-secret-value is required. The caller must generate and provide the secret value."
           exit 1
         fi
-        
-        # Validate secret type
-        case "$SECRET_TYPE" in
-          alphanumeric|base64|hex)
-            echo "Generating $SECRET_TYPE secret..."
-            ;;
-          *)
-            echo "::error::Invalid secret type '$SECRET_TYPE'. Must be one of: alphanumeric, base64, hex"
-            exit 1
-            ;;
-        esac
         
         # Configure AWS credentials
         export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
         export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
         export AWS_DEFAULT_REGION="$AWS_REGION"
         
-        # Generate new secret value based on type
-        case "$SECRET_TYPE" in
-          alphanumeric)
-            if [ "$INCLUDE_SPECIAL" = "true" ]; then
-              # Alphanumeric with special characters - use character mapping to ensure all chars are possible
-              # Define the character set as a string for indexing
-              CHAR_SET='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?'
-              CHAR_SET_LEN=${#CHAR_SET}
-              NEW_SECRET=""
-              # Generate random bytes and map them to character indices
-              while [ ${#NEW_SECRET} -lt $SECRET_LENGTH ]; do
-                # Get a random byte (0-255) and map it to our character set
-                RAND_BYTE=$(od -An -N1 -tu1 /dev/urandom | tr -d ' ')
-                # Use modulo to get index in character set
-                CHAR_INDEX=$((RAND_BYTE % CHAR_SET_LEN))
-                # Extract character at that index (bash substring: ${string:index:1})
-                NEW_SECRET="${NEW_SECRET}${CHAR_SET:$CHAR_INDEX:1}"
-              done
-            else
-              # Alphanumeric only
-              NEW_SECRET=$(openssl rand -base64 $((SECRET_LENGTH * 2)) | tr -dc 'A-Za-z0-9' | head -c $SECRET_LENGTH)
-            fi
-            ;;
-          base64)
-            NEW_SECRET=$(openssl rand -base64 $SECRET_LENGTH | tr -d '\n' | head -c $SECRET_LENGTH)
-            ;;
-          hex)
-            NEW_SECRET=$(openssl rand -hex $(((SECRET_LENGTH + 1) / 2)) | head -c $SECRET_LENGTH)
-            ;;
-        esac
-        
-        # Verify secret was generated
-        if [ -z "$NEW_SECRET" ] || [ ${#NEW_SECRET} -ne $SECRET_LENGTH ]; then
-          echo "::error::Failed to generate secret of correct length"
-          echo "Generated length: ${#NEW_SECRET}, Expected: $SECRET_LENGTH"
-          exit 1
-        fi
-        
-        echo "✓ Generated new secret value (length: ${#NEW_SECRET})"
+        # Use provided secret value
+        NEW_SECRET="$PROVIDED_SECRET_VALUE"
+        echo "✓ Using provided secret value (length: ${#NEW_SECRET})"
         
         # Mask the new secret in logs
         echo "::add-mask::$NEW_SECRET"
@@ -288,7 +228,6 @@ runs:
           echo "✅ Successfully rotated AWS secret"
           echo "  Secret ARN: $SECRET_ARN_RESPONSE"
           echo "  New secret length: ${#NEW_SECRET} characters"
-          echo "  Secret type: $SECRET_TYPE"
           echo ""
           echo "⚠️  IMPORTANT: The new secret value is available in the 'new-secret-value' output"
           echo "    Use it to update other services that depend on this secret."
