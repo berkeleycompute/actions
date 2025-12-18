@@ -1,5 +1,6 @@
 name: 'List Organization Secrets'
 description: 'List all organization secrets using a GitHub App installation token'
+permissions: {}
 inputs:
   token:
     description: 'GitHub App installation access token'
@@ -76,4 +77,6 @@ runs:
           echo "Error: $SECRETS_LIST"
           exit 1
         fi
+
+
 

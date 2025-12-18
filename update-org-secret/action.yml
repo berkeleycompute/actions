@@ -1,5 +1,6 @@
 name: 'Update Organization Secret'
 description: 'Update or create an organization secret using a GitHub App installation token'
+permissions: {}
 inputs:
   token:
     description: 'GitHub App installation access token'

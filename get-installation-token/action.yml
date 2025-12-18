@@ -1,5 +1,6 @@
 name: 'Get GitHub App Installation Token'
 description: 'Get an installation access token from a GitHub App JWT token'
+permissions: {}
 inputs:
   jwt-token:
     description: 'JWT token for GitHub App authentication'
@@ -137,4 +138,6 @@ runs:
         if [ -n "$EXPIRES_AT" ] && [ "$EXPIRES_AT" != "null" ]; then
           echo "Token expires at: $EXPIRES_AT"
         fi
+
+
 

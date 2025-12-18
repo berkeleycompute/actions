@@ -1,5 +1,6 @@
 name: 'Get GitHub App JWT Token'
 description: 'Generate a JWT token for GitHub App authentication'
+permissions: {}
 inputs:
   app-id:
     description: 'GitHub App ID'
@@ -148,4 +149,6 @@ runs:
         echo ""
         echo "✅ JWT token generated successfully and saved to output"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+
 

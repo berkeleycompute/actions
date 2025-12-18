@@ -1,5 +1,6 @@
 name: 'Update AWS Secret'
 description: 'Update a secret in AWS Secrets Manager'
+permissions: {}
 inputs:
   environment:
     description: 'Environment to use (dev, devops, prod, or stage) - determines which AWS credentials to use'

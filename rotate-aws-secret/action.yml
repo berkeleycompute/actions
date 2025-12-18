@@ -1,5 +1,6 @@
 name: 'Rotate AWS Secret'
 description: 'Automatically generate a new secure value and update an AWS Secrets Manager secret'
+permissions: {}
 inputs:
   environment:
     description: 'Environment to use (dev, devops, prod, or stage) - determines which AWS credentials to use'

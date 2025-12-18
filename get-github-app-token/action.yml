@@ -1,5 +1,6 @@
 name: 'Get GitHub App Installation Token'
 description: 'Generate JWT and get installation access token in one step'
+permissions: {}
 inputs:
   app-id:
     description: 'GitHub App ID'
