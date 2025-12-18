@@ -157,7 +157,11 @@ runs:
         # Update Supabase database password via Management API
         echo ""
         echo "Updating Supabase database password..."
-        echo "API Endpoint: ${API_URL}/v1/projects/${PROJECT_REF}/db-password"
+        
+        # Endpoint: PATCH /v1/projects/{ref}/database/password
+        API_ENDPOINT="${API_URL}/v1/projects/${PROJECT_REF}/database/password"
+        echo "API Endpoint: ${API_ENDPOINT}"
+        echo "Project Reference: ${PROJECT_REF}"
         
         # Make API call to update password
         RESPONSE=$(curl -s -w "\n%{http_code}" \
@@ -165,7 +169,7 @@ runs:
           -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
           -H "Content-Type: application/json" \
           -d "{\"password\":\"${NEW_PASSWORD}\"}" \
-          "${API_URL}/v1/projects/${PROJECT_REF}/db-password" 2>&1) || {
+          "${API_ENDPOINT}" 2>&1) || {
           echo "::error::Failed to call Supabase Management API"
           exit 1
         }
