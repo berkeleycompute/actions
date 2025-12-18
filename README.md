@@ -1,6 +1,6 @@
 # GitHub Actions Collection
 
-Reusable GitHub Actions for managing GitHub App authentication, organization secrets, and AWS Secrets Manager.
+Reusable GitHub Actions for managing GitHub App authentication, organization secrets, AWS Secrets Manager, and Supabase database passwords.
 
 ## Quick Reference
 
@@ -12,6 +12,7 @@ Reusable GitHub Actions for managing GitHub App authentication, organization sec
 | `update-org-secret` | Update GitHub org secret | Set specific secret values |
 | `update-aws-secret` | Update AWS secret with custom value | Set AWS secrets to known values |
 | `rotate-aws-secret` | Auto-generate and update AWS secret | Automated secret rotation |
+| `rotate-supabase-db-password` | Auto-generate and update Supabase DB password | Automated Supabase password rotation |
 
 ### AWS Actions: When to Use Which?
 
@@ -289,6 +290,99 @@ jobs:
    - Use `hex` for API keys and tokens
    - Use `base64` for binary data or when you need maximum entropy
 
+---
+
+### 7. `rotate-supabase-db-password`
+
+Automatically generates a new secure random password and updates the Supabase database password via the Management API. Perfect for automated password rotation.
+
+#### Inputs
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `supabase-access-token` | ✅ Yes | - | Supabase Management API access token. Get this from your Supabase dashboard under Settings > Access Tokens. |
+| `project-ref` | ✅ Yes | - | Supabase project reference ID. Found in your project's URL: `https://supabase.com/dashboard/project/<project-ref>`. |
+| `password-length` | ❌ No | `32` | Length of the generated password (minimum: 12, maximum: 128). Recommended: 32+ for production. |
+| `include-special-chars` | ❌ No | `true` | Include special characters in password (`true` or `false`). |
+| `supabase-api-url` | ❌ No | `https://api.supabase.com` | Supabase Management API base URL. Usually only needs to be changed for self-hosted instances. |
+
+#### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `success` | Boolean indicating whether the password was rotated successfully |
+| `project-ref` | The project reference that was updated |
+| `new-password` | The newly generated password (masked in logs, use to update dependent services) |
+
+#### Basic Example
+
+```yaml
+# Rotate a Supabase database password
+- uses: berkeleycompute/actions/rotate-supabase-db-password@main
+  id: rotate-supabase-password
+  with:
+    supabase-access-token: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    project-ref: 'abcdefghijklmnop'
+    password-length: '32'
+    include-special-chars: 'true'
+
+- name: Use the new password
+  run: |
+    echo "Password rotated successfully!"
+    # The new password is in: ${{ steps.rotate-supabase-password.outputs.new-password }}
+```
+
+#### Complete Rotation Example
+
+```yaml
+name: Rotate Supabase Database Password
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Every Sunday at 2 AM UTC
+  workflow_dispatch:
+
+jobs:
+  rotate-password:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rotate Supabase database password
+        id: rotate
+        uses: berkeleycompute/actions/rotate-supabase-db-password@main
+        with:
+          supabase-access-token: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          project-ref: ${{ secrets.SUPABASE_PROJECT_REF }}
+          password-length: '48'
+          include-special-chars: 'true'
+      
+      - name: Update connection strings
+        run: |
+          # Use the new password to update your application's connection strings
+          # The value is available in: ${{ steps.rotate.outputs.new-password }}
+          echo "Password rotated for project: ${{ steps.rotate.outputs.project-ref }}"
+      
+      - name: Notify team
+        if: success()
+        run: echo "✅ Supabase database password rotated successfully"
+```
+
+#### Important Notes
+
+1. **Automatic Generation**: The action generates a cryptographically secure random password - you don't need to provide one.
+
+2. **Connection Termination**: Resetting the database password will terminate all existing database connections. Ensure you update all applications and services that connect to this database with the new password.
+
+3. **Minimum Length**: For security, the minimum password length is 12 characters. Recommended: 32+ for production databases.
+
+4. **Access Token Permissions**: The Supabase access token must have permissions to update database passwords. This typically requires the token to have project management permissions.
+
+5. **New Password in Output**: The newly generated password is available in the `new-password` output. Use this to update other services that depend on this password (e.g., connection strings, environment variables, secrets managers).
+
+6. **Finding Your Project Reference**: 
+   - Go to your Supabase project dashboard
+   - The project reference is in the URL: `https://supabase.com/dashboard/project/<project-ref>`
+   - Or find it in Project Settings > General
+
 ## Complete Examples
 
 ### Example 1: Manage GitHub Organization Secrets
@@ -511,6 +605,32 @@ Environment-specific AWS credentials (where `<ENV>` is `DEV`, `DEVOPS`, `PROD`, 
 The AWS credentials must have the following IAM permissions:
 - `secretsmanager:PutSecretValue` - to update secret values
 - `secretsmanager:DescribeSecret` - to verify the secret exists (optional but recommended)
+
+### For Supabase Actions (rotate-supabase-db-password)
+
+#### Required Secrets
+
+1. **SUPABASE_ACCESS_TOKEN**: Supabase Management API access token
+   - Get this from your Supabase dashboard: Settings > Access Tokens
+   - Create a new token with appropriate permissions if needed
+   - The token must have permissions to update database passwords
+
+2. **SUPABASE_PROJECT_REF**: Supabase project reference ID (optional, can be passed directly)
+   - Found in your project's URL: `https://supabase.com/dashboard/project/<project-ref>`
+   - Or in Project Settings > General
+
+#### API Permissions
+
+The Supabase access token must have:
+- **Project management permissions** - to update database passwords
+- Access to the specific project you want to rotate the password for
+
+#### Getting Your Access Token
+
+1. Log in to your Supabase dashboard
+2. Navigate to Settings > Access Tokens
+3. Create a new access token or use an existing one
+4. Store it securely in your GitHub secrets
 
 ## Usage in Other Repositories
 

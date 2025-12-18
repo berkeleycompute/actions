@@ -1,0 +1,220 @@
+name: 'Rotate Supabase DB Password'
+description: 'Automatically generate a new secure password and update the Supabase database password via Management API'
+permissions: {}
+inputs:
+  supabase-access-token:
+    description: 'Supabase Management API access token'
+    required: true
+  project-ref:
+    description: 'Supabase project reference ID'
+    required: true
+  password-length:
+    description: 'Length of the generated password (minimum: 12, maximum: 128)'
+    required: false
+    default: '32'
+  include-special-chars:
+    description: 'Include special characters in password (true or false)'
+    required: false
+    default: 'true'
+  supabase-api-url:
+    description: 'Supabase Management API base URL'
+    required: false
+    default: 'https://api.supabase.com'
+outputs:
+  success:
+    description: 'Whether the password was rotated successfully'
+    value: ${{ steps.rotate-password.outputs.success }}
+  project-ref:
+    description: 'Project reference that was updated'
+    value: ${{ steps.rotate-password.outputs.project-ref }}
+  new-password:
+    description: 'The newly generated password (masked in logs, use to update dependent services)'
+    value: ${{ steps.rotate-password.outputs.new-password }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Rotate Supabase DB password
+      id: rotate-password
+      shell: bash
+      run: |
+        set -e
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Rotating Supabase Database Password"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # Install jq if not available
+        if ! command -v jq &> /dev/null; then
+          echo "Installing jq..."
+          if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          elif command -v brew &> /dev/null; then
+            brew install jq
+          else
+            echo "::error::jq is required but could not be installed automatically"
+            exit 1
+          fi
+        fi
+        
+        SUPABASE_ACCESS_TOKEN="${{ inputs.supabase-access-token }}"
+        PROJECT_REF="${{ inputs.project-ref }}"
+        PASSWORD_LENGTH="${{ inputs.password-length }}"
+        INCLUDE_SPECIAL="${{ inputs.include-special-chars }}"
+        API_URL="${{ inputs.supabase-api-url }}"
+        
+        # Validate inputs
+        echo ""
+        echo "Input validation:"
+        if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+          echo "::error::Supabase access token is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ Supabase Access Token: Set (length: ${#SUPABASE_ACCESS_TOKEN})"
+        
+        if [ -z "$PROJECT_REF" ]; then
+          echo "::error::Project reference is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ Project Reference: $PROJECT_REF"
+        
+        # Validate password length
+        if [ -z "$PASSWORD_LENGTH" ]; then
+          PASSWORD_LENGTH=32
+        fi
+        
+        # Convert to integer and validate
+        PASSWORD_LENGTH_INT=$(echo "$PASSWORD_LENGTH" | tr -d '[:space:]' | grep -E '^[0-9]+$' || echo "")
+        if [ -z "$PASSWORD_LENGTH_INT" ]; then
+          echo "::error::Password length must be a number"
+          exit 1
+        fi
+        
+        if [ "$PASSWORD_LENGTH_INT" -lt 12 ]; then
+          echo "::error::Password length must be at least 12 characters for security"
+          exit 1
+        fi
+        
+        if [ "$PASSWORD_LENGTH_INT" -gt 128 ]; then
+          echo "::error::Password length cannot exceed 128 characters"
+          exit 1
+        fi
+        
+        echo "  ✓ Password Length: $PASSWORD_LENGTH_INT"
+        echo "  ✓ Include Special Characters: $INCLUDE_SPECIAL"
+        echo "  ✓ API URL: $API_URL"
+        echo ""
+        
+        # Mask sensitive values in logs
+        echo "::add-mask::$SUPABASE_ACCESS_TOKEN"
+        
+        # Generate a secure random password
+        echo "Generating secure random password..."
+        
+        # Character sets
+        LOWER="abcdefghijklmnopqrstuvwxyz"
+        UPPER="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        DIGITS="0123456789"
+        SPECIAL="!@#$%^&*()_+-=[]{}|;:,.<>?"
+        
+        if [ "$INCLUDE_SPECIAL" = "true" ]; then
+          CHARSET="${LOWER}${UPPER}${DIGITS}${SPECIAL}"
+        else
+          CHARSET="${LOWER}${UPPER}${DIGITS}"
+        fi
+        
+        # Generate password using /dev/urandom
+        NEW_PASSWORD=""
+        CHARSET_LEN=${#CHARSET}
+        
+        # Ensure password has at least one of each required character type
+        NEW_PASSWORD="${NEW_PASSWORD}$(echo -n "$LOWER" | fold -w1 | shuf | head -1)"
+        NEW_PASSWORD="${NEW_PASSWORD}$(echo -n "$UPPER" | fold -w1 | shuf | head -1)"
+        NEW_PASSWORD="${NEW_PASSWORD}$(echo -n "$DIGITS" | fold -w1 | shuf | head -1)"
+        
+        if [ "$INCLUDE_SPECIAL" = "true" ]; then
+          NEW_PASSWORD="${NEW_PASSWORD}$(echo -n "$SPECIAL" | fold -w1 | shuf | head -1)"
+          REMAINING=$((PASSWORD_LENGTH_INT - 4))
+        else
+          REMAINING=$((PASSWORD_LENGTH_INT - 3))
+        fi
+        
+        # Fill the rest randomly
+        for i in $(seq 1 $REMAINING); do
+          RANDOM_BYTE=$(od -An -N1 -tu1 < /dev/urandom)
+          INDEX=$((RANDOM_BYTE % CHARSET_LEN))
+          CHAR="${CHARSET:$INDEX:1}"
+          NEW_PASSWORD="${NEW_PASSWORD}${CHAR}"
+        done
+        
+        # Shuffle the password to avoid predictable pattern
+        NEW_PASSWORD=$(echo "$NEW_PASSWORD" | fold -w1 | shuf | tr -d '\n')
+        
+        echo "✓ Generated secure password (length: ${#NEW_PASSWORD})"
+        
+        # Mask the new password in logs
+        echo "::add-mask::$NEW_PASSWORD"
+        
+        # Update Supabase database password via Management API
+        echo ""
+        echo "Updating Supabase database password..."
+        echo "API Endpoint: ${API_URL}/v1/projects/${PROJECT_REF}/db-password"
+        
+        # Make API call to update password
+        RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X PATCH \
+          -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "{\"password\":\"${NEW_PASSWORD}\"}" \
+          "${API_URL}/v1/projects/${PROJECT_REF}/db-password" 2>&1) || {
+          echo "::error::Failed to call Supabase Management API"
+          exit 1
+        }
+        
+        # Extract HTTP status code (last line) and body (all but last line)
+        HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+        RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "project-ref=$PROJECT_REF" >> $GITHUB_OUTPUT
+          
+          # Save the new password to output (masked)
+          {
+            echo "new-password<<EOF"
+            echo "$NEW_PASSWORD"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          
+          echo ""
+          echo "✅ Successfully rotated Supabase database password"
+          echo "  Project Reference: $PROJECT_REF"
+          echo "  New password length: ${#NEW_PASSWORD} characters"
+          echo ""
+          echo "⚠️  IMPORTANT: The new password is available in the 'new-password' output"
+          echo "    Use it to update other services that depend on this password."
+          echo "    All existing database connections will be terminated."
+        else
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "::error::Failed to rotate Supabase database password"
+          echo "HTTP Status Code: $HTTP_CODE"
+          echo "Response: $RESPONSE_BODY"
+          echo ""
+          echo "Common issues:"
+          echo "  - Invalid Supabase access token"
+          echo "  - Invalid project reference"
+          echo "  - Insufficient permissions on the access token"
+          echo "  - Network connectivity issues"
+          
+          # Try to parse error message if available
+          if echo "$RESPONSE_BODY" | jq empty 2>/dev/null; then
+            ERROR_MSG=$(echo "$RESPONSE_BODY" | jq -r '.message // .error // empty' 2>/dev/null || echo "")
+            if [ -n "$ERROR_MSG" ]; then
+              echo "  Error message: $ERROR_MSG"
+            fi
+          fi
+          
+          exit 1
+        fi
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
