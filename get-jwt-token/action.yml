@@ -3,11 +3,11 @@ description: 'Generate a JWT token for GitHub App authentication'
 permissions: {}
 inputs:
   app-id:
-    description: 'GitHub App ID'
-    required: true
+    description: 'GitHub App ID (required - provide via input or set GH_APP_ID env var/secret)'
+    required: false
   private-key:
-    description: 'GitHub App private key (PEM format)'
-    required: true
+    description: 'GitHub App private key in PEM format (required - provide via input or set GH_APP_PRIVATE_KEY env var/secret)'
+    required: false
 outputs:
   jwt-token:
     description: 'Generated JWT token for GitHub App authentication'
@@ -35,20 +35,34 @@ runs:
           sudo apt-get update && sudo apt-get install -y openssl
         fi
         
+        # Get values from inputs, then fall back to environment variables/secrets
         APP_ID="${{ inputs.app-id }}"
+        if [ -z "$APP_ID" ]; then
+          APP_ID="${GH_APP_ID:-}"
+        fi
+        
         PRIVATE_KEY="${{ inputs.private-key }}"
+        if [ -z "$PRIVATE_KEY" ]; then
+          PRIVATE_KEY="${GH_APP_PRIVATE_KEY:-}"
+        fi
         
         # Debug: Check inputs
         echo ""
         echo "Input validation:"
         if [ -z "$APP_ID" ]; then
-          echo "::error::App ID is empty or not set"
+          echo "::error::App ID is REQUIRED but not provided"
+          echo "Provide it via:"
+          echo "  - Input: app-id: \${{ secrets.GH_APP_ID }}"
+          echo "  - Environment variable: GH_APP_ID"
           exit 1
         fi
         echo "  ✓ App ID: $APP_ID (length: ${#APP_ID})"
         
         if [ -z "$PRIVATE_KEY" ]; then
-          echo "::error::Private key is empty or not set"
+          echo "::error::Private key is REQUIRED but not provided"
+          echo "Provide it via:"
+          echo "  - Input: private-key: \${{ secrets.GH_APP_PRIVATE_KEY }}"
+          echo "  - Environment variable: GH_APP_PRIVATE_KEY"
           exit 1
         fi
         echo "  ✓ Private key: Set (length: ${#PRIVATE_KEY} characters)"
