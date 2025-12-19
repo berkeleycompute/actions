@@ -3,14 +3,14 @@ description: 'Generate JWT and get installation access token in one step'
 permissions: {}
 inputs:
   app-id:
-    description: 'GitHub App ID'
-    required: true
+    description: 'GitHub App ID (required - provide via input or set GH_APP_ID env var/secret)'
+    required: false
   private-key:
-    description: 'GitHub App private key (PEM format)'
-    required: true
+    description: 'GitHub App private key in PEM format (required - provide via input or set GH_APP_PRIVATE_KEY env var/secret)'
+    required: false
   installation-id:
-    description: 'GitHub App installation ID'
-    required: true
+    description: 'GitHub App installation ID (required - provide via input or set GH_APP_INSTALLATION_ID env var/secret)'
+    required: false
 outputs:
   token:
     description: 'Installation access token'
@@ -40,9 +40,46 @@ runs:
           sudo apt-get update && sudo apt-get install -y curl
         fi
         
+        # Get values from inputs, then fall back to environment variables/secrets
         APP_ID="${{ inputs.app-id }}"
+        if [ -z "$APP_ID" ]; then
+          APP_ID="${GH_APP_ID:-}"
+        fi
+        
         PRIVATE_KEY="${{ inputs.private-key }}"
+        if [ -z "$PRIVATE_KEY" ]; then
+          PRIVATE_KEY="${GH_APP_PRIVATE_KEY:-}"
+        fi
+        
         INSTALLATION_ID="${{ inputs.installation-id }}"
+        if [ -z "$INSTALLATION_ID" ]; then
+          INSTALLATION_ID="${GH_APP_INSTALLATION_ID:-}"
+        fi
+        
+        # Validate all required values are present (must be provided via input or env var)
+        if [ -z "$APP_ID" ]; then
+          echo "::error::App ID is REQUIRED but not provided"
+          echo "Provide it via:"
+          echo "  - Input: app-id: \${{ secrets.GH_APP_ID }}"
+          echo "  - Environment variable: GH_APP_ID"
+          exit 1
+        fi
+        
+        if [ -z "$PRIVATE_KEY" ]; then
+          echo "::error::Private key is REQUIRED but not provided"
+          echo "Provide it via:"
+          echo "  - Input: private-key: \${{ secrets.GH_APP_PRIVATE_KEY }}"
+          echo "  - Environment variable: GH_APP_PRIVATE_KEY"
+          exit 1
+        fi
+        
+        if [ -z "$INSTALLATION_ID" ]; then
+          echo "::error::Installation ID is REQUIRED but not provided"
+          echo "Provide it via:"
+          echo "  - Input: installation-id: \${{ secrets.GH_APP_INSTALLATION_ID }}"
+          echo "  - Environment variable: GH_APP_INSTALLATION_ID"
+          exit 1
+        fi
         
         # Generate JWT token
         NOW=$(date +%s)

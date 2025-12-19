@@ -1,0 +1,204 @@
+name: 'Save Supabase Access Token'
+description: 'Save a Supabase Management API access token to GitHub organization secrets. Note: Tokens must be generated manually from https://supabase.com/dashboard/account/tokens - this action only saves the token you provide.'
+permissions: {}
+inputs:
+  token:
+    description: 'GitHub App installation access token (for updating org secrets)'
+    required: true
+  organization:
+    description: 'Organization name'
+    required: true
+  secret-name:
+    description: 'Name of the organization secret to create/update (e.g., SUPABASE_ACCESS_TOKEN_TEST)'
+    required: true
+  access-token:
+    description: 'The Supabase Management API access token to save (starts with sbp_). Generate it from https://supabase.com/dashboard/account/tokens'
+    required: true
+  validate-token:
+    description: 'Validate that the new token works by testing it with Supabase API (true or false)'
+    required: false
+    default: 'true'
+outputs:
+  success:
+    description: 'Whether the token was saved successfully'
+    value: ${{ steps.save-token.outputs.success }}
+  secret-name:
+    description: 'Name of the secret that was saved'
+    value: ${{ steps.save-token.outputs.secret-name }}
+  token-validated:
+    description: 'Whether the token was successfully validated with Supabase API'
+    value: ${{ steps.save-token.outputs.token-validated }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Save Supabase access token
+      id: save-token
+      shell: bash
+      run: |
+        set -e
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Saving Supabase Access Token to GitHub Secrets"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "⚠️  IMPORTANT: This action does NOT create the token."
+        echo "   Supabase tokens cannot be created programmatically."
+        echo ""
+        echo "   To generate a new token:"
+        echo "   1. Go to: https://supabase.com/dashboard/account/tokens"
+        echo "   2. Click 'Generate new token'"
+        echo "   3. Give it a name and copy the token (starts with sbp_)"
+        echo "   4. Pass the token to this action's 'access-token' input"
+        echo ""
+        
+        # Install GitHub CLI if not available
+        if ! command -v gh &> /dev/null; then
+          echo "Installing GitHub CLI..."
+          type -p curl >/dev/null || (sudo apt-get update && sudo apt-get install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y gh
+        fi
+        
+        # Install jq if not available
+        if ! command -v jq &> /dev/null; then
+          echo "Installing jq..."
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+        
+        APP_TOKEN="${{ inputs.token }}"
+        ORG_NAME="${{ inputs.organization }}"
+        SECRET_NAME="${{ inputs.secret-name }}"
+        ACCESS_TOKEN="${{ inputs.access-token }}"
+        VALIDATE_TOKEN="${{ inputs.validate-token }}"
+        
+        # Validate inputs
+        echo ""
+        echo "Input validation:"
+        if [ -z "$APP_TOKEN" ]; then
+          echo "::error::GitHub App token is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ GitHub App token: Set (length: ${#APP_TOKEN})"
+        
+        if [ -z "$ORG_NAME" ]; then
+          echo "::error::Organization name is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ Organization: $ORG_NAME"
+        
+        if [ -z "$SECRET_NAME" ]; then
+          echo "::error::Secret name is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ Secret name: $SECRET_NAME"
+        
+        if [ -z "$ACCESS_TOKEN" ]; then
+          echo "::error::Supabase access token is empty or not set"
+          echo ""
+          echo "To generate a new access token:"
+          echo "  1. Go to https://supabase.com/dashboard/account/tokens"
+          echo "  2. Click 'Generate new token'"
+          echo "  3. Give it a name (e.g., 'GitHub Actions Token')"
+          echo "  4. Copy the token (it should start with sbp_)"
+          echo "  5. Pass it to this action as 'access-token' input"
+          exit 1
+        fi
+        
+        # Validate token format (should start with sbp_)
+        TOKEN_PREFIX=$(echo "$ACCESS_TOKEN" | cut -c1-4)
+        if [ "$TOKEN_PREFIX" != "sbp_" ]; then
+          echo "::error::Invalid Supabase access token format"
+          echo "Access tokens should start with 'sbp_' (Management API Access Token)"
+          echo "Token provided starts with: ${TOKEN_PREFIX}..."
+          echo ""
+          echo "To generate a new access token:"
+          echo "  1. Go to https://supabase.com/dashboard/account/tokens"
+          echo "  2. Click 'Generate new token'"
+          echo "  3. Copy the token (it should start with sbp_)"
+          exit 1
+        fi
+        echo "  ✓ Token format: Valid (starts with sbp_)"
+        echo "  ✓ Token length: ${#ACCESS_TOKEN} characters"
+        
+        # Mask the token in logs
+        echo "::add-mask::$ACCESS_TOKEN"
+        echo "::add-mask::$APP_TOKEN"
+        echo ""
+        
+        # Validate token with Supabase API if requested
+        if [ "$VALIDATE_TOKEN" = "true" ]; then
+          echo "Validating token with Supabase Management API..."
+          VALIDATION_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X GET \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            "https://api.supabase.com/v1/projects" 2>&1) || {
+            echo "::warning::Failed to validate token with Supabase API"
+            echo "Continuing with saving token anyway..."
+            VALIDATED="false"
+          }
+          
+          HTTP_CODE=$(echo "$VALIDATION_RESPONSE" | tail -n1)
+          if [ "$HTTP_CODE" = "200" ]; then
+            PROJECT_COUNT=$(echo "$VALIDATION_RESPONSE" | sed '$d' | jq 'length' 2>/dev/null || echo "0")
+            echo "✅ Token validation successful"
+            echo "  - HTTP Status: $HTTP_CODE"
+            echo "  - Projects accessible: $PROJECT_COUNT"
+            VALIDATED="true"
+          else
+            echo "::warning::Token validation failed (HTTP $HTTP_CODE)"
+            echo "The token may be invalid or expired. Continuing with save anyway..."
+            VALIDATED="false"
+          fi
+          echo ""
+        else
+          echo "⚠️  Token validation skipped (validate-token=false)"
+          VALIDATED="skipped"
+        fi
+        
+        # Unset default GITHUB_TOKEN to prevent GitHub CLI from using it
+        unset GITHUB_TOKEN
+        
+        # Authenticate GitHub CLI with the App token
+        echo "$APP_TOKEN" | gh auth login --with-token
+        
+        # Save organization secret (creates if doesn't exist, updates if exists)
+        echo ""
+        echo "Saving Supabase access token to organization secret: $SECRET_NAME"
+        echo "$ACCESS_TOKEN" | gh secret set "$SECRET_NAME" --org "$ORG_NAME"
+        
+        SAVE_EXIT_CODE=$?
+        if [ $SAVE_EXIT_CODE -eq 0 ]; then
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "secret-name=$SECRET_NAME" >> $GITHUB_OUTPUT
+          if [ "$VALIDATED" = "true" ]; then
+            echo "token-validated=true" >> $GITHUB_OUTPUT
+          elif [ "$VALIDATED" = "false" ]; then
+            echo "token-validated=false" >> $GITHUB_OUTPUT
+          else
+            echo "token-validated=skipped" >> $GITHUB_OUTPUT
+          fi
+          echo ""
+          echo "✅ Successfully saved Supabase access token"
+          echo "  Secret name: $SECRET_NAME"
+          echo "  Organization: $ORG_NAME"
+          if [ "$VALIDATED" = "true" ]; then
+            echo "  Token validation: ✅ Passed"
+          elif [ "$VALIDATED" = "false" ]; then
+            echo "  Token validation: ❌ Failed (token may be invalid)"
+          else
+            echo "  Token validation: ⏭️  Skipped"
+          fi
+          echo ""
+          echo "The token is now available as an organization secret and can be used"
+          echo "in workflows that need Supabase Management API access."
+        else
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "::error::Failed to save organization secret (exit code: $SAVE_EXIT_CODE)"
+          echo "This requires the GitHub App token to have 'Administration: Read and write' permission."
+          exit 1
+        fi
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+

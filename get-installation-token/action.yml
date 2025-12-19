@@ -6,8 +6,8 @@ inputs:
     description: 'JWT token for GitHub App authentication'
     required: true
   installation-id:
-    description: 'GitHub App installation ID'
-    required: true
+    description: 'GitHub App installation ID (required - provide via input or set GH_APP_INSTALLATION_ID env var/secret)'
+    required: false
 outputs:
   token:
     description: 'Installation access token'
@@ -28,7 +28,21 @@ runs:
         fi
         
         JWT_TOKEN="${{ inputs.jwt-token }}"
+        
+        # Get installation ID from input, then fall back to environment variable/secret
         INSTALLATION_ID="${{ inputs.installation-id }}"
+        if [ -z "$INSTALLATION_ID" ]; then
+          INSTALLATION_ID="${GH_APP_INSTALLATION_ID:-}"
+        fi
+        
+        # Validate installation ID is present (must be provided via input or env var)
+        if [ -z "$INSTALLATION_ID" ]; then
+          echo "::error::Installation ID is REQUIRED but not provided"
+          echo "Provide it via:"
+          echo "  - Input: installation-id: \${{ secrets.GH_APP_INSTALLATION_ID }}"
+          echo "  - Environment variable: GH_APP_INSTALLATION_ID"
+          exit 1
+        fi
         
         # Debug: Check if JWT token is set
         if [ -z "$JWT_TOKEN" ]; then
