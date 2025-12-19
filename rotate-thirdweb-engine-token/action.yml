@@ -1,0 +1,183 @@
+name: 'Rotate Thirdweb Engine Access Token'
+description: 'Create a new Thirdweb Engine access token and revoke the old one'
+permissions: {}
+inputs:
+  secret-key:
+    description: 'Thirdweb secret key for authentication'
+    required: true
+  engine-url:
+    description: 'Thirdweb Engine URL (e.g., https://68ac0e06.engine-usw2.thirdweb.com)'
+    required: true
+  old-token:
+    description: 'Old access token to revoke (optional, will be revoked after new token is created)'
+    required: false
+  label:
+    description: 'Label for the new access token'
+    required: false
+    default: 'GitHub Actions - Auto-rotated'
+outputs:
+  success:
+    description: 'Whether the token rotation was successful'
+    value: ${{ steps.rotate-token.outputs.success }}
+  new-token:
+    description: 'The newly generated access token (masked in logs)'
+    value: ${{ steps.rotate-token.outputs.new-token }}
+  token-id:
+    description: 'ID of the newly created token'
+    value: ${{ steps.rotate-token.outputs.token-id }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Rotate Thirdweb Engine token
+      id: rotate-token
+      shell: bash
+      run: |
+        set -e
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Rotating Thirdweb Engine Access Token"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # Install jq if not available
+        if ! command -v jq &> /dev/null; then
+          echo "Installing jq..."
+          if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          elif command -v brew &> /dev/null; then
+            brew install jq
+          else
+            echo "::error::jq is required but could not be installed automatically"
+            exit 1
+          fi
+        fi
+        
+        SECRET_KEY="${{ inputs.secret-key }}"
+        ENGINE_URL="${{ inputs.engine-url }}"
+        OLD_TOKEN="${{ inputs.old-token }}"
+        LABEL="${{ inputs.label }}"
+        
+        # Validate inputs
+        echo ""
+        echo "Input validation:"
+        if [ -z "$SECRET_KEY" ]; then
+          echo "::error::Secret key is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ Secret Key: Set (length: ${#SECRET_KEY})"
+        
+        if [ -z "$ENGINE_URL" ]; then
+          echo "::error::Engine URL is empty or not set"
+          exit 1
+        fi
+        # Remove trailing slash from URL if present
+        ENGINE_URL="${ENGINE_URL%/}"
+        echo "  ✓ Engine URL: $ENGINE_URL"
+        
+        if [ -n "$OLD_TOKEN" ]; then
+          echo "  ✓ Old Token: Set (will be revoked after new token is created)"
+        else
+          echo "  ⚠ Old Token: Not provided (no token will be revoked)"
+        fi
+        
+        echo "  ✓ Label: $LABEL"
+        
+        # Step 1: Create new access token
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Step 1: Creating new access token"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+          "${ENGINE_URL}/auth/access-tokens/create" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${SECRET_KEY}" \
+          -d "{\"label\": \"${LABEL}\"}")
+        
+        HTTP_CODE=$(echo "$CREATE_RESPONSE" | tail -n1)
+        RESPONSE_BODY=$(echo "$CREATE_RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+          echo "::error::Failed to create new access token (HTTP $HTTP_CODE)"
+          echo "Response: $RESPONSE_BODY"
+          exit 1
+        fi
+        
+        # Extract new token and token ID
+        NEW_TOKEN=$(echo "$RESPONSE_BODY" | jq -r '.result.accessToken // .accessToken // empty')
+        TOKEN_ID=$(echo "$RESPONSE_BODY" | jq -r '.result.id // .id // empty')
+        
+        if [ -z "$NEW_TOKEN" ]; then
+          echo "::error::Failed to extract new token from response"
+          echo "Response: $RESPONSE_BODY"
+          exit 1
+        fi
+        
+        # Mask the new token in logs
+        echo "::add-mask::$NEW_TOKEN"
+        
+        echo "✅ New access token created successfully"
+        echo "  Token ID: $TOKEN_ID"
+        echo "  Token: ••••••••••••••••••••••••••••"
+        
+        # Step 2: Revoke old token (if provided)
+        if [ -n "$OLD_TOKEN" ]; then
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Step 2: Revoking old access token"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # First, get the ID of the old token by listing all tokens
+          LIST_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
+            "${ENGINE_URL}/auth/access-tokens/get-all" \
+            -H "Authorization: Bearer ${SECRET_KEY}")
+          
+          LIST_HTTP_CODE=$(echo "$LIST_RESPONSE" | tail -n1)
+          LIST_BODY=$(echo "$LIST_RESPONSE" | sed '$d')
+          
+          if [ "$LIST_HTTP_CODE" -eq 200 ]; then
+            # Find the token ID for the old token
+            OLD_TOKEN_ID=$(echo "$LIST_BODY" | jq -r --arg token "$OLD_TOKEN" \
+              '.result[] | select(.accessToken == $token) | .id')
+            
+            if [ -n "$OLD_TOKEN_ID" ]; then
+              # Revoke the old token
+              REVOKE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                "${ENGINE_URL}/auth/access-tokens/revoke" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${SECRET_KEY}" \
+                -d "{\"id\": \"${OLD_TOKEN_ID}\"}")
+              
+              REVOKE_HTTP_CODE=$(echo "$REVOKE_RESPONSE" | tail -n1)
+              REVOKE_BODY=$(echo "$REVOKE_RESPONSE" | sed '$d')
+              
+              if [ "$REVOKE_HTTP_CODE" -eq 200 ]; then
+                echo "✅ Old access token revoked successfully"
+                echo "  Token ID: $OLD_TOKEN_ID"
+              else
+                echo "::warning::Failed to revoke old token (HTTP $REVOKE_HTTP_CODE)"
+                echo "Response: $REVOKE_BODY"
+                echo "New token was created successfully, but old token may still be active"
+              fi
+            else
+              echo "::warning::Could not find old token ID for revocation"
+              echo "Old token may have already been revoked or does not exist"
+            fi
+          else
+            echo "::warning::Failed to list tokens for revocation (HTTP $LIST_HTTP_CODE)"
+            echo "New token was created successfully, but old token was not revoked"
+          fi
+        fi
+        
+        # Set outputs
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Rotation Complete"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "success=true" >> $GITHUB_OUTPUT
+        echo "new-token=$NEW_TOKEN" >> $GITHUB_OUTPUT
+        echo "token-id=$TOKEN_ID" >> $GITHUB_OUTPUT
+        
+        echo "✅ Token rotation completed successfully"
+        echo "  New token ID: $TOKEN_ID"
+        echo "  Next step: Update organization secrets with the new token"
