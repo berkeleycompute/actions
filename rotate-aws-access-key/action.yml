@@ -186,13 +186,18 @@ runs:
         
         if [ -z "$NEW_ACCESS_KEY_ID" ] || [ "$NEW_ACCESS_KEY_ID" = "null" ]; then
           echo "::error::Failed to extract new access key ID from response"
+          echo "Full response: $CREATE_KEY_RESPONSE"
           exit 1
         fi
         
         if [ -z "$NEW_SECRET_ACCESS_KEY" ] || [ "$NEW_SECRET_ACCESS_KEY" = "null" ]; then
           echo "::error::Failed to extract new secret access key from response"
+          echo "Full response: $CREATE_KEY_RESPONSE"
           exit 1
         fi
+        
+        # Clean the secret access key (remove any newlines or extra whitespace)
+        NEW_SECRET_ACCESS_KEY=$(echo "$NEW_SECRET_ACCESS_KEY" | tr -d '\n\r' | xargs)
         
         echo "  ✓ New Access Key ID: $NEW_ACCESS_KEY_ID"
         echo "  ✓ New Secret Access Key: Set (length: ${#NEW_SECRET_ACCESS_KEY} characters)"
@@ -210,33 +215,83 @@ runs:
         # Step 3: Test the new access key
         echo ""
         echo "Step 3: Testing new access key..."
-        echo "  Waiting 2 seconds for AWS to propagate the new key..."
-        sleep 2
+        echo "  Waiting 5 seconds for AWS to propagate the new key..."
+        sleep 5
+        
+        # Debug: Verify the credentials are set correctly
+        echo "  Debug: Verifying credentials before test..."
+        echo "    New Access Key ID length: ${#NEW_ACCESS_KEY_ID}"
+        echo "    New Secret Access Key length: ${#NEW_SECRET_ACCESS_KEY}"
         
         # Test the new key by creating a temporary session
+        # Try multiple times with increasing delays (AWS may need time to propagate)
         echo "  Testing new key with AWS STS GetCallerIdentity..."
-        TEST_IDENTITY=$(AWS_ACCESS_KEY_ID="$NEW_ACCESS_KEY_ID" \
-          AWS_SECRET_ACCESS_KEY="$NEW_SECRET_ACCESS_KEY" \
-          AWS_DEFAULT_REGION="$AWS_REGION" \
-          aws sts get-caller-identity --output json 2>&1) || {
-          TEST_EXIT_CODE=$?
-          echo "::error::Failed to verify new access key (exit code: $TEST_EXIT_CODE)"
-          echo "Response: $TEST_IDENTITY"
+        MAX_RETRIES=5
+        RETRY_COUNT=0
+        TEST_IDENTITY=""
+        TEST_EXIT_CODE=0
+        
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+          RETRY_COUNT=$((RETRY_COUNT + 1))
+          echo "    Attempt $RETRY_COUNT of $MAX_RETRIES..."
+          
+          # Use explicit export to ensure variables are set correctly
+          export AWS_ACCESS_KEY_ID="$NEW_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$NEW_SECRET_ACCESS_KEY"
+          export AWS_DEFAULT_REGION="$AWS_REGION"
+          
+          # Test with explicit credentials
+          TEST_IDENTITY=$(aws sts get-caller-identity \
+            --output json 2>&1) && {
+            echo "    ✓ Success on attempt $RETRY_COUNT"
+            break
+          } || {
+            TEST_EXIT_CODE=$?
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              WAIT_TIME=$((RETRY_COUNT * 2))
+              echo "    ✗ Attempt $RETRY_COUNT failed (exit code: $TEST_EXIT_CODE), waiting ${WAIT_TIME}s before retry..."
+              sleep $WAIT_TIME
+            else
+              echo "    ✗ All attempts failed"
+            fi
+          }
+        done
+        
+        if [ $RETRY_COUNT -eq $MAX_RETRIES ] && [ $TEST_EXIT_CODE -ne 0 ]; then
+          echo "::error::Failed to verify new access key after $MAX_RETRIES attempts (exit code: $TEST_EXIT_CODE)"
+          echo "Last response: $TEST_IDENTITY"
           echo ""
-          echo "⚠️  WARNING: New access key was created but verification failed!"
-          echo "    New Access Key ID: $NEW_ACCESS_KEY_ID"
-          echo "    New Secret Access Key: $NEW_SECRET_ACCESS_KEY"
-          echo "    Old Access Key ID (still active): $OLD_ACCESS_KEY_ID"
+          echo "Debug information:"
+          echo "  - Access Key ID: $NEW_ACCESS_KEY_ID"
+          echo "  - Secret Access Key length: ${#NEW_SECRET_ACCESS_KEY}"
+          echo "  - Region: $AWS_REGION"
           echo ""
-          echo "    The new key will NOT be deleted. You should:"
-          echo "    1. Manually verify the new key"
-          echo "    2. If the new key works, manually delete the old key: $OLD_ACCESS_KEY_ID"
-          echo "    3. If the new key doesn't work, delete it and investigate the issue"
-          echo ""
-          echo "    To delete the new key if needed:"
-          echo "    aws iam delete-access-key --user-name $IAM_USERNAME --access-key-id $NEW_ACCESS_KEY_ID"
-          exit 1
-        }
+          echo "Trying manual verification with explicit credentials..."
+          # Try one more time with explicit credentials in the command
+          MANUAL_TEST=$(AWS_ACCESS_KEY_ID="$NEW_ACCESS_KEY_ID" \
+            AWS_SECRET_ACCESS_KEY="$NEW_SECRET_ACCESS_KEY" \
+            AWS_DEFAULT_REGION="$AWS_REGION" \
+            aws sts get-caller-identity --output json 2>&1) || {
+            echo "Manual test also failed:"
+            echo "$MANUAL_TEST"
+            echo ""
+            echo "⚠️  WARNING: New access key was created but verification failed!"
+            echo "    New Access Key ID: $NEW_ACCESS_KEY_ID"
+            echo "    New Secret Access Key: $NEW_SECRET_ACCESS_KEY"
+            echo "    Old Access Key ID (still active): $OLD_ACCESS_KEY_ID"
+            echo ""
+            echo "    The new key will NOT be deleted. You should:"
+            echo "    1. Manually verify the new key"
+            echo "    2. If the new key works, manually delete the old key: $OLD_ACCESS_KEY_ID"
+            echo "    3. If the new key doesn't work, delete it and investigate the issue"
+            echo ""
+            echo "    To delete the new key if needed:"
+            echo "    aws iam delete-access-key --user-name $IAM_USERNAME --access-key-id $NEW_ACCESS_KEY_ID"
+            exit 1
+          }
+          TEST_IDENTITY="$MANUAL_TEST"
+          echo "  ✓ Manual test succeeded!"
+        fi
         
         # Verify the test response
         TEST_USER_ARN=$(echo "$TEST_IDENTITY" | jq -r '.Arn // empty')
