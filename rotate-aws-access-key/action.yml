@@ -198,23 +198,84 @@ runs:
         echo "::add-mask::$NEW_ACCESS_KEY_ID"
         echo "::add-mask::$NEW_SECRET_ACCESS_KEY"
         
-        # Step 3: Delete old access key
+        # Step 3: Test the new access key
         echo ""
-        echo "Step 3: Deleting old access key '$OLD_ACCESS_KEY_ID'..."
+        echo "Step 3: Testing new access key..."
+        echo "  Waiting 2 seconds for AWS to propagate the new key..."
+        sleep 2
         
-        DELETE_KEY_RESPONSE=$(aws iam delete-access-key \
-          --user-name "$IAM_USERNAME" \
-          --access-key-id "$OLD_ACCESS_KEY_ID" \
-          --output json 2>&1) || {
-          echo "::error::Failed to delete old access key '$OLD_ACCESS_KEY_ID'"
-          echo "$DELETE_KEY_RESPONSE"
+        # Test the new key by creating a temporary session
+        echo "  Testing new key with AWS STS GetCallerIdentity..."
+        TEST_IDENTITY=$(AWS_ACCESS_KEY_ID="$NEW_ACCESS_KEY_ID" \
+          AWS_SECRET_ACCESS_KEY="$NEW_SECRET_ACCESS_KEY" \
+          AWS_DEFAULT_REGION="$AWS_REGION" \
+          aws sts get-caller-identity --output json 2>&1) || {
+          TEST_EXIT_CODE=$?
+          echo "::error::Failed to verify new access key (exit code: $TEST_EXIT_CODE)"
+          echo "Response: $TEST_IDENTITY"
           echo ""
-          echo "⚠️  WARNING: New access key was created but old key deletion failed!"
+          echo "⚠️  WARNING: New access key was created but verification failed!"
           echo "    New Access Key ID: $NEW_ACCESS_KEY_ID"
           echo "    New Secret Access Key: $NEW_SECRET_ACCESS_KEY"
           echo "    Old Access Key ID (still active): $OLD_ACCESS_KEY_ID"
           echo ""
-          echo "    You should manually delete the old key or retry this action."
+          echo "    The new key will NOT be deleted. You should:"
+          echo "    1. Manually verify the new key"
+          echo "    2. If the new key works, manually delete the old key: $OLD_ACCESS_KEY_ID"
+          echo "    3. If the new key doesn't work, delete it and investigate the issue"
+          echo ""
+          echo "    To delete the new key if needed:"
+          echo "    aws iam delete-access-key --user-name $IAM_USERNAME --access-key-id $NEW_ACCESS_KEY_ID"
+          exit 1
+        }
+        
+        # Verify the test response
+        TEST_USER_ARN=$(echo "$TEST_IDENTITY" | jq -r '.Arn // empty')
+        TEST_USER_ID=$(echo "$TEST_IDENTITY" | jq -r '.UserId // empty')
+        TEST_ACCOUNT=$(echo "$TEST_IDENTITY" | jq -r '.Account // empty')
+        
+        if [ -z "$TEST_USER_ARN" ] || [ "$TEST_USER_ARN" = "null" ]; then
+          echo "::error::New access key verification returned invalid response"
+          echo "Response: $TEST_IDENTITY"
+          echo ""
+          echo "⚠️  WARNING: New access key was created but verification failed!"
+          echo "    The new key will NOT be deleted. Please verify manually."
+          exit 1
+        fi
+        
+        echo "  ✓ New access key verified successfully!"
+        echo "    User ARN: $TEST_USER_ARN"
+        echo "    User ID: $TEST_USER_ID"
+        echo "    Account: $TEST_ACCOUNT"
+        echo ""
+        echo "  ✅ New key is working correctly. Proceeding to delete old key..."
+        
+        # Step 4: Delete old access key (only if new key works)
+        echo ""
+        echo "Step 4: Deleting old access key '$OLD_ACCESS_KEY_ID'..."
+        
+        # Use the new key credentials to delete the old key (in case old key was used for auth)
+        # If the old key was used for authentication, we need to use the new key for deletion
+        DELETE_KEY_RESPONSE=$(AWS_ACCESS_KEY_ID="$NEW_ACCESS_KEY_ID" \
+          AWS_SECRET_ACCESS_KEY="$NEW_SECRET_ACCESS_KEY" \
+          AWS_DEFAULT_REGION="$AWS_REGION" \
+          aws iam delete-access-key \
+          --user-name "$IAM_USERNAME" \
+          --access-key-id "$OLD_ACCESS_KEY_ID" \
+          --output json 2>&1) || {
+          DELETE_EXIT_CODE=$?
+          echo "::error::Failed to delete old access key '$OLD_ACCESS_KEY_ID' (exit code: $DELETE_EXIT_CODE)"
+          echo "Response: $DELETE_KEY_RESPONSE"
+          echo ""
+          echo "⚠️  WARNING: New access key was created and verified, but old key deletion failed!"
+          echo "    New Access Key ID: $NEW_ACCESS_KEY_ID"
+          echo "    New Secret Access Key: $NEW_SECRET_ACCESS_KEY"
+          echo "    Old Access Key ID (still active): $OLD_ACCESS_KEY_ID"
+          echo ""
+          echo "    The new key is working correctly. You should manually delete the old key:"
+          echo "    aws iam delete-access-key --user-name $IAM_USERNAME --access-key-id $OLD_ACCESS_KEY_ID"
+          echo ""
+          echo "    Or retry this action."
           exit 1
         }
         
@@ -236,6 +297,11 @@ runs:
         echo "✅ Successfully rotated AWS access key for user '$IAM_USERNAME'"
         echo "  Old Access Key ID (deleted): $OLD_ACCESS_KEY_ID"
         echo "  New Access Key ID: $NEW_ACCESS_KEY_ID"
+        echo ""
+        echo "  Rotation process:"
+        echo "    1. ✓ Created new access key"
+        echo "    2. ✓ Verified new access key works (tested with AWS STS)"
+        echo "    3. ✓ Deleted old access key (only after verification succeeded)"
         echo ""
         echo "⚠️  IMPORTANT: Save the new access key credentials immediately!"
         echo "    New Access Key ID: $NEW_ACCESS_KEY_ID"
