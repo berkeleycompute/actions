@@ -169,8 +169,11 @@ runs:
           exit 1
         fi
         
+        # Create new access key with CLI use case
+        # Use case helps AWS understand the purpose and can affect recommended permissions
         CREATE_KEY_RESPONSE=$(aws iam create-access-key \
           --user-name "$IAM_USERNAME" \
+          --use-case CLI \
           --output json 2>&1) || {
           echo "::error::Failed to create new access key for user '$IAM_USERNAME'"
           echo "$CREATE_KEY_RESPONSE"

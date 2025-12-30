@@ -387,12 +387,19 @@ jobs:
 
 4. **Update Dependencies**: After rotation, update all services, applications, and configurations that use the old access key with the new credentials.
 
-5. **IAM Permissions**: The AWS credentials used must have the following IAM permissions:
-   - `iam:ListAccessKeys` - to list existing keys
-   - `iam:CreateAccessKey` - to create new keys
-   - `iam:DeleteAccessKey` - to delete old keys
+5. **Access Key Use Case**: New access keys are created with the "CLI" use case, which is appropriate for command-line interface usage and helps AWS understand the key's purpose.
 
-6. **Error Handling**: If key creation succeeds but deletion fails, the action will exit with an error. The new key will still be available in the outputs, but you'll need to manually delete the old key.
+6. **IAM Permissions**: The AWS credentials used must have the following IAM permissions:
+   - `iam:ListAccessKeys` - to list existing keys
+   - `iam:CreateAccessKey` - to create new keys (with CLI use case)
+   - `iam:DeleteAccessKey` - to delete old keys
+   - `sts:GetCallerIdentity` - to verify new keys work (used during rotation)
+
+7. **Error Handling**: The action follows a safe rotation process:
+   - Creates new key first
+   - Verifies new key works with AWS STS
+   - Only deletes old key if verification succeeds
+   - If verification fails, old key remains active and new key is preserved
 
 ---
 
@@ -712,8 +719,12 @@ Environment-specific AWS credentials (where `<ENV>` is `DEV`, `DEVOPS`, `PROD`, 
 
 **For `rotate-aws-access-key`:**
 - `iam:ListAccessKeys` - to list existing access keys for a user
-- `iam:CreateAccessKey` - to create new access keys
+- `iam:CreateAccessKey` - to create new access keys (with CLI use case)
 - `iam:DeleteAccessKey` - to delete old access keys
+- `iam:GetUser` - to verify if user exists (optional, for user verification)
+- `iam:CreateUser` - to create user if it doesn't exist (optional, for automated setup)
+- `iam:TagUser` - to tag created users (optional)
+- `sts:GetCallerIdentity` - to verify new access keys work (used during rotation)
 
 ### For Supabase Actions (rotate-supabase-db-password)
 
