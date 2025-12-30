@@ -387,11 +387,9 @@ jobs:
 
 4. **Update Dependencies**: After rotation, update all services, applications, and configurations that use the old access key with the new credentials.
 
-5. **Access Key Use Case**: New access keys are created with the "CLI" use case, which is appropriate for command-line interface usage and helps AWS understand the key's purpose.
-
-6. **IAM Permissions**: The AWS credentials used must have the following IAM permissions:
+5. **IAM Permissions**: The AWS credentials used must have the following IAM permissions:
    - `iam:ListAccessKeys` - to list existing keys
-   - `iam:CreateAccessKey` - to create new keys (with CLI use case)
+   - `iam:CreateAccessKey` - to create new keys (intended for CLI/API usage)
    - `iam:DeleteAccessKey` - to delete old keys
    - `sts:GetCallerIdentity` - to verify new keys work (used during rotation)
 

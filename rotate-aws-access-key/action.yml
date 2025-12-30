@@ -169,11 +169,11 @@ runs:
           exit 1
         fi
         
-        # Create new access key with CLI use case
-        # Use case helps AWS understand the purpose and can affect recommended permissions
+        # Create new access key
+        # Note: The --use-case parameter is not available in all AWS CLI versions
+        # Access keys created here are intended for CLI/API usage
         CREATE_KEY_RESPONSE=$(aws iam create-access-key \
           --user-name "$IAM_USERNAME" \
-          --use-case CLI \
           --output json 2>&1) || {
           echo "::error::Failed to create new access key for user '$IAM_USERNAME'"
           echo "$CREATE_KEY_RESPONSE"
@@ -200,6 +200,12 @@ runs:
         # Mask the new keys in logs
         echo "::add-mask::$NEW_ACCESS_KEY_ID"
         echo "::add-mask::$NEW_SECRET_ACCESS_KEY"
+        
+        # Note: AWS CLI doesn't support --use-case parameter (this is a console-only feature)
+        # The access key is created for CLI/API usage by default
+        # If you need to specify a use case, you can do so manually in the AWS Console after creation
+        echo "  ℹ️  Note: Access key created for CLI/API usage"
+        echo "    (Use case specification is only available in AWS Console, not CLI)"
         
         # Step 3: Test the new access key
         echo ""
