@@ -17,6 +17,16 @@ inputs:
   iam-username:
     description: 'IAM username whose access key will be rotated'
     required: true
+  update-github-secrets:
+    description: 'Whether to automatically update GitHub organization secrets with new credentials (requires github-pat)'
+    required: false
+    default: 'false'
+  github-pat:
+    description: 'GitHub Personal Access Token with admin:org permissions (required if update-github-secrets is true)'
+    required: false
+  github-org:
+    description: 'GitHub organization name (defaults to repository owner if not provided)'
+    required: false
 outputs:
   success:
     description: 'Whether the access key was rotated successfully'
@@ -375,5 +385,80 @@ runs:
         echo "    The old key '$OLD_ACCESS_KEY_ID' has been deleted and is no longer valid."
         echo ""
         
+        # Step 5: Update GitHub organization secrets (optional)
+        UPDATE_SECRETS="${{ inputs.update-github-secrets }}"
+        GITHUB_PAT="${{ inputs.github-pat }}"
+        GITHUB_ORG="${{ inputs.github-org }}"
+        
+        if [ "$UPDATE_SECRETS" = "true" ] || [ "$UPDATE_SECRETS" = "True" ] || [ "$UPDATE_SECRETS" = "TRUE" ]; then
+          echo ""
+          echo "Step 5: Updating GitHub organization secrets..."
+          
+          if [ -z "$GITHUB_PAT" ] || [ "$GITHUB_PAT" = "" ]; then
+            echo "  ⚠️  Warning: update-github-secrets is true but github-pat is not provided"
+            echo "    Skipping GitHub secrets update."
+            echo "    To enable automatic updates, provide a PAT with admin:org permissions."
+          else
+            # Install GitHub CLI if not available
+            if ! command -v gh &> /dev/null; then
+              echo "  Installing GitHub CLI..."
+              type -p curl >/dev/null || (sudo apt-get update && sudo apt-get install curl -y)
+              curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              sudo apt-get update
+              sudo apt-get install -y gh
+            fi
+            
+            # Determine organization name
+            if [ -z "$GITHUB_ORG" ] || [ "$GITHUB_ORG" = "" ]; then
+              # Try to get from environment (if running in GitHub Actions)
+              if [ -n "$GITHUB_REPOSITORY_OWNER" ]; then
+                GITHUB_ORG="$GITHUB_REPOSITORY_OWNER"
+              else
+                echo "  ⚠️  Warning: github-org not provided and GITHUB_REPOSITORY_OWNER not available"
+                echo "    Skipping GitHub secrets update."
+                GITHUB_ORG=""
+              fi
+            fi
+            
+            if [ -n "$GITHUB_ORG" ] && [ "$GITHUB_ORG" != "" ]; then
+              # Unset default GITHUB_TOKEN
+              unset GITHUB_TOKEN
+              
+              # Authenticate with PAT
+              echo "  Authenticating with GitHub CLI..."
+              echo "$GITHUB_PAT" | gh auth login --with-token 2>&1 || {
+                echo "  ⚠️  Warning: Failed to authenticate with GitHub CLI"
+                echo "    Skipping GitHub secrets update."
+                GITHUB_ORG=""
+              }
+              
+              if [ -n "$GITHUB_ORG" ] && [ "$GITHUB_ORG" != "" ]; then
+                # Convert environment to uppercase for secret names
+                ENV_UPPER=$(echo "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')
+                
+                echo "  Updating AWS_ACCESS_KEY_${ENV_UPPER}..."
+                echo "$NEW_ACCESS_KEY_ID" | gh secret set "AWS_ACCESS_KEY_${ENV_UPPER}" --org "$GITHUB_ORG" 2>&1 || {
+                  echo "  ⚠️  Warning: Failed to update AWS_ACCESS_KEY_${ENV_UPPER}"
+                }
+                
+                echo "  Updating AWS_SECRET_KEY_${ENV_UPPER}..."
+                echo "$NEW_SECRET_ACCESS_KEY" | gh secret set "AWS_SECRET_KEY_${ENV_UPPER}" --org "$GITHUB_ORG" 2>&1 || {
+                  echo "  ⚠️  Warning: Failed to update AWS_SECRET_KEY_${ENV_UPPER}"
+                }
+                
+                echo "  ✅ GitHub organization secrets updated successfully!"
+                echo "    - AWS_ACCESS_KEY_${ENV_UPPER}: Updated"
+                echo "    - AWS_SECRET_KEY_${ENV_UPPER}: Updated"
+              fi
+            fi
+          fi
+        else
+          echo ""
+          echo "ℹ️  Note: GitHub secrets update skipped (update-github-secrets not set to true)"
+          echo "    To enable automatic updates, set update-github-secrets: true and provide github-pat"
+        fi
+        
+        echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 

@@ -307,6 +307,9 @@ Rotates AWS IAM access keys by creating a new access key and deleting the old on
 | `aws-secret-access-key` | ✅ Yes | - | AWS Secret Access Key for the specified environment. Use organization secrets: `AWS_SECRET_KEY_<ENV>`. |
 | `aws-region` | ❌ No | `us-east-1` | AWS Region where the IAM user is located. |
 | `iam-username` | ✅ Yes | - | IAM username whose access key will be rotated. |
+| `update-github-secrets` | ❌ No | `false` | Whether to automatically update GitHub organization secrets with new credentials. Requires `github-pat`. |
+| `github-pat` | ❌ No | - | GitHub Personal Access Token with `admin:org` permissions. Required if `update-github-secrets` is `true`. |
+| `github-org` | ❌ No | - | GitHub organization name. Defaults to `GITHUB_REPOSITORY_OWNER` if not provided. |
 
 #### Outputs
 
@@ -364,12 +367,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY_PROD }}
           aws-region: 'us-east-1'
           iam-username: ${{ github.event.inputs.iam-username }}
+          update-github-secrets: 'true'  # Automatically update GitHub organization secrets
+          github-pat: ${{ secrets.PAT_GITHUB }}  # PAT with admin:org permissions
+          github-org: ${{ github.repository_owner }}  # Organization name
       
-      - name: Update GitHub secrets with new key
+      - name: Verify rotation and secrets update
         run: |
-          # Use the new access key to update GitHub secrets or other services
+          # The action automatically updated GitHub secrets if update-github-secrets was true
           echo "Old key deleted: ${{ steps.rotate.outputs.old-access-key-id }}"
           echo "New key created: ${{ steps.rotate.outputs.new-access-key-id }}"
+          echo "GitHub secrets updated automatically by the action"
           # The new secret access key is in: ${{ steps.rotate.outputs.new-secret-access-key }}
       
       - name: Notify team
@@ -387,7 +394,13 @@ jobs:
 
 4. **Update Dependencies**: After rotation, update all services, applications, and configurations that use the old access key with the new credentials.
 
-5. **IAM Permissions**: The AWS credentials used must have the following IAM permissions:
+5. **Automatic GitHub Secrets Update**: The action can automatically update GitHub organization secrets after a successful rotation:
+   - Set `update-github-secrets: true` to enable
+   - Provide `github-pat` with `admin:org` permissions
+   - Optionally specify `github-org` (defaults to repository owner)
+   - If enabled, the action will update `AWS_ACCESS_KEY_<ENV>` and `AWS_SECRET_KEY_<ENV>` secrets automatically
+
+6. **IAM Permissions**: The AWS credentials used must have the following IAM permissions:
    - `iam:ListAccessKeys` - to list existing keys
    - `iam:CreateAccessKey` - to create new keys (intended for CLI/API usage)
    - `iam:DeleteAccessKey` - to delete old keys
