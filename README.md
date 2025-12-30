@@ -1,6 +1,6 @@
 # GitHub Actions Collection
 
-Reusable GitHub Actions for managing GitHub App authentication, organization secrets, AWS Secrets Manager, and Supabase database passwords.
+Reusable GitHub Actions for managing GitHub App authentication, organization secrets, AWS Secrets Manager, AWS IAM access keys, and Supabase database passwords.
 
 ## Quick Reference
 
@@ -12,12 +12,14 @@ Reusable GitHub Actions for managing GitHub App authentication, organization sec
 | `update-org-secret` | Update GitHub org secret | Set specific secret values |
 | `update-aws-secret` | Update AWS secret with custom value | Set AWS secrets to known values |
 | `rotate-aws-secret` | Auto-generate and update AWS secret | Automated secret rotation |
+| `rotate-aws-access-key` | Rotate AWS IAM access keys | Rotate IAM user access keys |
 | `rotate-supabase-db-password` | Auto-generate and update Supabase DB password | Automated Supabase password rotation |
 
 ### AWS Actions: When to Use Which?
 
 - **Use `update-aws-secret`** when you need to set a secret to a **specific value** (e.g., API keys from external services, configuration values)
 - **Use `rotate-aws-secret`** when you need to **generate a new random value** for security (e.g., database passwords, internal API keys, tokens)
+- **Use `rotate-aws-access-key`** when you need to **rotate IAM user access keys** (creates new key and deletes old one)
 
 ## Available Actions
 
@@ -292,7 +294,109 @@ jobs:
 
 ---
 
-### 7. `rotate-supabase-db-password`
+### 7. `rotate-aws-access-key`
+
+Rotates AWS IAM access keys by creating a new access key and deleting the old one. This is useful for security best practices and automated key rotation.
+
+#### Inputs
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `environment` | ✅ Yes | - | Environment to target. Must be one of: `dev`, `devops`, `prod`, or `stage`. |
+| `aws-access-key-id` | ✅ Yes | - | AWS Access Key ID for the specified environment. Use organization secrets: `AWS_ACCESS_KEY_<ENV>`. |
+| `aws-secret-access-key` | ✅ Yes | - | AWS Secret Access Key for the specified environment. Use organization secrets: `AWS_SECRET_KEY_<ENV>`. |
+| `aws-region` | ❌ No | `us-east-1` | AWS Region where the IAM user is located. |
+| `iam-username` | ✅ Yes | - | IAM username whose access key will be rotated. |
+
+#### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `success` | Boolean indicating whether the access key was rotated successfully |
+| `new-access-key-id` | The newly created access key ID (masked in logs) |
+| `new-secret-access-key` | The newly created secret access key (masked in logs) |
+| `old-access-key-id` | The old access key ID that was deleted |
+
+#### Basic Example
+
+```yaml
+# Rotate an IAM user's access key
+- uses: berkeleycompute/actions/rotate-aws-access-key@main
+  id: rotate-access-key
+  with:
+    environment: 'devops'
+    aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_DEVOPS }}
+    aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY_DEVOPS }}
+    aws-region: 'us-east-1'
+    iam-username: 'my-iam-user'
+
+- name: Use the new access key
+  run: |
+    echo "Access key rotated successfully!"
+    echo "New Access Key ID: ${{ steps.rotate-access-key.outputs.new-access-key-id }}"
+    # The new secret access key is in: ${{ steps.rotate-access-key.outputs.new-secret-access-key }}
+```
+
+#### Complete Rotation Example
+
+```yaml
+name: Rotate IAM Access Key
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Every Sunday at 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      iam-username:
+        description: 'IAM username to rotate'
+        required: true
+
+jobs:
+  rotate-key:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rotate AWS access key
+        id: rotate
+        uses: berkeleycompute/actions/rotate-aws-access-key@main
+        with:
+          environment: 'prod'
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY_PROD }}
+          aws-region: 'us-east-1'
+          iam-username: ${{ github.event.inputs.iam-username }}
+      
+      - name: Update GitHub secrets with new key
+        run: |
+          # Use the new access key to update GitHub secrets or other services
+          echo "Old key deleted: ${{ steps.rotate.outputs.old-access-key-id }}"
+          echo "New key created: ${{ steps.rotate.outputs.new-access-key-id }}"
+          # The new secret access key is in: ${{ steps.rotate.outputs.new-secret-access-key }}
+      
+      - name: Notify team
+        if: success()
+        run: echo "✅ IAM access key rotated successfully for ${{ github.event.inputs.iam-username }}"
+```
+
+#### Important Notes
+
+1. **AWS Key Limit**: Each IAM user can have a maximum of 2 access keys. If the user already has 2 keys, you must delete one manually before running this action.
+
+2. **Current Key Usage**: If the access key being used for authentication is the one being rotated, the action will still work, but ensure you save the new key before the old one is deleted.
+
+3. **New Keys in Output**: The newly created access key ID and secret access key are available in the outputs. **Save these immediately** as the secret access key is only shown once.
+
+4. **Update Dependencies**: After rotation, update all services, applications, and configurations that use the old access key with the new credentials.
+
+5. **IAM Permissions**: The AWS credentials used must have the following IAM permissions:
+   - `iam:ListAccessKeys` - to list existing keys
+   - `iam:CreateAccessKey` - to create new keys
+   - `iam:DeleteAccessKey` - to delete old keys
+
+6. **Error Handling**: If key creation succeeds but deletion fails, the action will exit with an error. The new key will still be available in the outputs, but you'll need to manually delete the old key.
+
+---
+
+### 8. `rotate-supabase-db-password`
 
 Automatically generates a new secure random password and updates the Supabase database password via the Management API. Perfect for automated password rotation.
 
@@ -585,7 +689,7 @@ These secrets must be set in your organization:
 The GitHub App must have:
 - **Organization permissions**: `Administration: Read and write`
 
-### For AWS Actions (update-aws-secret)
+### For AWS Actions (update-aws-secret, rotate-aws-secret, rotate-aws-access-key)
 
 #### Required Secrets
 
@@ -602,9 +706,14 @@ Environment-specific AWS credentials (where `<ENV>` is `DEV`, `DEVOPS`, `PROD`, 
 
 #### IAM Permissions
 
-The AWS credentials must have the following IAM permissions:
+**For `update-aws-secret` and `rotate-aws-secret`:**
 - `secretsmanager:PutSecretValue` - to update secret values
 - `secretsmanager:DescribeSecret` - to verify the secret exists (optional but recommended)
+
+**For `rotate-aws-access-key`:**
+- `iam:ListAccessKeys` - to list existing access keys for a user
+- `iam:CreateAccessKey` - to create new access keys
+- `iam:DeleteAccessKey` - to delete old access keys
 
 ### For Supabase Actions (rotate-supabase-db-password)
 

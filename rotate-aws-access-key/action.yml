@@ -1,0 +1,249 @@
+name: 'Rotate AWS Access Key'
+description: 'Rotate AWS IAM access keys by creating a new key and deleting the old one'
+inputs:
+  environment:
+    description: 'Environment to use (dev, devops, prod, or stage) - determines which AWS credentials to use'
+    required: true
+  aws-access-key-id:
+    description: 'AWS Access Key ID (use secrets.AWS_ACCESS_KEY_<ENV>)'
+    required: true
+  aws-secret-access-key:
+    description: 'AWS Secret Access Key (use secrets.AWS_SECRET_KEY_<ENV>)'
+    required: true
+  aws-region:
+    description: 'AWS Region'
+    required: false
+    default: 'us-east-1'
+  iam-username:
+    description: 'IAM username whose access key will be rotated'
+    required: true
+outputs:
+  success:
+    description: 'Whether the access key was rotated successfully'
+    value: ${{ steps.rotate-key.outputs.success }}
+  new-access-key-id:
+    description: 'The newly created access key ID (masked in logs)'
+    value: ${{ steps.rotate-key.outputs.new-access-key-id }}
+  new-secret-access-key:
+    description: 'The newly created secret access key (masked in logs)'
+    value: ${{ steps.rotate-key.outputs.new-secret-access-key }}
+  old-access-key-id:
+    description: 'The old access key ID that was deleted'
+    value: ${{ steps.rotate-key.outputs.old-access-key-id }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Rotate AWS access key
+      id: rotate-key
+      shell: bash
+      run: |
+        set -e
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Rotating AWS IAM Access Key"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # Install AWS CLI if not available
+        if ! command -v aws &> /dev/null; then
+          echo "Installing AWS CLI..."
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+          rm -rf awscliv2.zip aws
+        fi
+        
+        # Install jq if not available
+        if ! command -v jq &> /dev/null; then
+          echo "Installing jq..."
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+        
+        ENVIRONMENT="${{ inputs.environment }}"
+        AWS_ACCESS_KEY_ID="${{ inputs.aws-access-key-id }}"
+        AWS_SECRET_ACCESS_KEY="${{ inputs.aws-secret-access-key }}"
+        AWS_REGION="${{ inputs.aws-region }}"
+        IAM_USERNAME="${{ inputs.iam-username }}"
+        
+        # Validate environment parameter
+        echo ""
+        echo "Input validation:"
+        if [ -z "$ENVIRONMENT" ]; then
+          echo "::error::Environment is empty or not set"
+          exit 1
+        fi
+        
+        # Validate environment is one of the allowed values
+        case "$ENVIRONMENT" in
+          dev|devops|prod|stage)
+            echo "  ✓ Environment: $ENVIRONMENT"
+            ;;
+          *)
+            echo "::error::Invalid environment '$ENVIRONMENT'. Must be one of: dev, devops, prod, stage"
+            exit 1
+            ;;
+        esac
+        
+        # Convert environment to uppercase for logging
+        ENV_UPPER=$(echo "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')
+        
+        # Validate AWS credentials
+        if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+          echo "::error::AWS Access Key ID is empty or not set"
+          echo "Make sure you're passing secrets.AWS_ACCESS_KEY_${ENV_UPPER}"
+          exit 1
+        fi
+        echo "  ✓ AWS Access Key ID: Set (length: ${#AWS_ACCESS_KEY_ID})"
+        
+        if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+          echo "::error::AWS Secret Access Key is empty or not set"
+          echo "Make sure you're passing secrets.AWS_SECRET_KEY_${ENV_UPPER}"
+          exit 1
+        fi
+        echo "  ✓ AWS Secret Access Key: Set (length: ${#AWS_SECRET_ACCESS_KEY} characters)"
+        
+        if [ -z "$IAM_USERNAME" ]; then
+          echo "::error::IAM username is empty or not set"
+          exit 1
+        fi
+        echo "  ✓ IAM Username: $IAM_USERNAME"
+        echo "  ✓ AWS Region: $AWS_REGION"
+        echo ""
+        
+        # Configure AWS credentials
+        export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
+        export AWS_DEFAULT_REGION="$AWS_REGION"
+        
+        # Mask sensitive values in logs
+        echo "::add-mask::$AWS_ACCESS_KEY_ID"
+        echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+        
+        # Step 1: List current access keys
+        echo ""
+        echo "Step 1: Listing current access keys for user '$IAM_USERNAME'..."
+        LIST_KEYS_RESPONSE=$(aws iam list-access-keys \
+          --user-name "$IAM_USERNAME" \
+          --output json 2>&1) || {
+          echo "::error::Failed to list access keys for user '$IAM_USERNAME'"
+          echo "$LIST_KEYS_RESPONSE"
+          exit 1
+        }
+        
+        # Parse existing keys
+        EXISTING_KEYS=$(echo "$LIST_KEYS_RESPONSE" | jq -r '.AccessKeyMetadata // []')
+        KEY_COUNT=$(echo "$EXISTING_KEYS" | jq 'length')
+        
+        echo "  ✓ Found $KEY_COUNT access key(s) for user '$IAM_USERNAME'"
+        
+        if [ "$KEY_COUNT" -eq 0 ]; then
+          echo "::error::No existing access keys found for user '$IAM_USERNAME'. Cannot rotate."
+          exit 1
+        fi
+        
+        # Get the first (oldest) access key ID to delete
+        OLD_ACCESS_KEY_ID=$(echo "$EXISTING_KEYS" | jq -r '.[0].AccessKeyId // empty')
+        
+        if [ -z "$OLD_ACCESS_KEY_ID" ] || [ "$OLD_ACCESS_KEY_ID" = "null" ]; then
+          echo "::error::Could not extract access key ID from response"
+          exit 1
+        fi
+        
+        echo "  ✓ Old Access Key ID to delete: $OLD_ACCESS_KEY_ID"
+        
+        # Check if we're trying to delete the key we're currently using
+        if [ "$OLD_ACCESS_KEY_ID" = "$AWS_ACCESS_KEY_ID" ]; then
+          echo "⚠️  WARNING: The access key being used for authentication is the one that will be deleted."
+          echo "    This is expected during rotation, but ensure the new key is saved before deletion."
+        fi
+        
+        # Step 2: Create new access key
+        echo ""
+        echo "Step 2: Creating new access key for user '$IAM_USERNAME'..."
+        
+        # Check if user already has 2 keys (AWS limit)
+        if [ "$KEY_COUNT" -ge 2 ]; then
+          echo "::error::User '$IAM_USERNAME' already has 2 access keys (AWS limit)."
+          echo "    You must delete one key before creating a new one."
+          echo "    Existing keys:"
+          echo "$EXISTING_KEYS" | jq -r '.[] | "      - \(.AccessKeyId) (Status: \(.Status), Created: \(.CreateDate))"'
+          exit 1
+        fi
+        
+        CREATE_KEY_RESPONSE=$(aws iam create-access-key \
+          --user-name "$IAM_USERNAME" \
+          --output json 2>&1) || {
+          echo "::error::Failed to create new access key for user '$IAM_USERNAME'"
+          echo "$CREATE_KEY_RESPONSE"
+          exit 1
+        }
+        
+        # Parse new key details
+        NEW_ACCESS_KEY_ID=$(echo "$CREATE_KEY_RESPONSE" | jq -r '.AccessKey.AccessKeyId // empty')
+        NEW_SECRET_ACCESS_KEY=$(echo "$CREATE_KEY_RESPONSE" | jq -r '.AccessKey.SecretAccessKey // empty')
+        
+        if [ -z "$NEW_ACCESS_KEY_ID" ] || [ "$NEW_ACCESS_KEY_ID" = "null" ]; then
+          echo "::error::Failed to extract new access key ID from response"
+          exit 1
+        fi
+        
+        if [ -z "$NEW_SECRET_ACCESS_KEY" ] || [ "$NEW_SECRET_ACCESS_KEY" = "null" ]; then
+          echo "::error::Failed to extract new secret access key from response"
+          exit 1
+        fi
+        
+        echo "  ✓ New Access Key ID: $NEW_ACCESS_KEY_ID"
+        echo "  ✓ New Secret Access Key: Set (length: ${#NEW_SECRET_ACCESS_KEY} characters)"
+        
+        # Mask the new keys in logs
+        echo "::add-mask::$NEW_ACCESS_KEY_ID"
+        echo "::add-mask::$NEW_SECRET_ACCESS_KEY"
+        
+        # Step 3: Delete old access key
+        echo ""
+        echo "Step 3: Deleting old access key '$OLD_ACCESS_KEY_ID'..."
+        
+        DELETE_KEY_RESPONSE=$(aws iam delete-access-key \
+          --user-name "$IAM_USERNAME" \
+          --access-key-id "$OLD_ACCESS_KEY_ID" \
+          --output json 2>&1) || {
+          echo "::error::Failed to delete old access key '$OLD_ACCESS_KEY_ID'"
+          echo "$DELETE_KEY_RESPONSE"
+          echo ""
+          echo "⚠️  WARNING: New access key was created but old key deletion failed!"
+          echo "    New Access Key ID: $NEW_ACCESS_KEY_ID"
+          echo "    New Secret Access Key: $NEW_SECRET_ACCESS_KEY"
+          echo "    Old Access Key ID (still active): $OLD_ACCESS_KEY_ID"
+          echo ""
+          echo "    You should manually delete the old key or retry this action."
+          exit 1
+        }
+        
+        echo "  ✓ Successfully deleted old access key '$OLD_ACCESS_KEY_ID'"
+        
+        # Set outputs
+        echo "success=true" >> $GITHUB_OUTPUT
+        echo "new-access-key-id=$NEW_ACCESS_KEY_ID" >> $GITHUB_OUTPUT
+        echo "old-access-key-id=$OLD_ACCESS_KEY_ID" >> $GITHUB_OUTPUT
+        
+        # Save the new secret access key to output (masked)
+        {
+          echo "new-secret-access-key<<EOF"
+          echo "$NEW_SECRET_ACCESS_KEY"
+          echo "EOF"
+        } >> $GITHUB_OUTPUT
+        
+        echo ""
+        echo "✅ Successfully rotated AWS access key for user '$IAM_USERNAME'"
+        echo "  Old Access Key ID (deleted): $OLD_ACCESS_KEY_ID"
+        echo "  New Access Key ID: $NEW_ACCESS_KEY_ID"
+        echo ""
+        echo "⚠️  IMPORTANT: Save the new access key credentials immediately!"
+        echo "    New Access Key ID: $NEW_ACCESS_KEY_ID"
+        echo "    New Secret Access Key: Available in the 'new-secret-access-key' output"
+        echo ""
+        echo "    Update all services and configurations that use the old key."
+        echo "    The old key '$OLD_ACCESS_KEY_ID' has been deleted and is no longer valid."
+        echo ""
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
