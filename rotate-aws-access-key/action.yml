@@ -150,15 +150,29 @@ runs:
           exit 1
         fi
         
-        # Get the first (oldest) access key ID to delete
-        OLD_ACCESS_KEY_ID=$(echo "$EXISTING_KEYS" | jq -r '.[0].AccessKeyId // empty')
+        # Find the access key ID that matches the one being used for authentication
+        # This is the key we want to replace (delete after creating new one)
+        OLD_ACCESS_KEY_ID=""
+        for i in $(seq 0 $((KEY_COUNT - 1))); do
+          KEY_ID=$(echo "$EXISTING_KEYS" | jq -r ".[$i].AccessKeyId")
+          if [ "$KEY_ID" = "$AWS_ACCESS_KEY_ID" ]; then
+            OLD_ACCESS_KEY_ID="$KEY_ID"
+            break
+          fi
+        done
         
+        # If we didn't find the auth key in the list, use the first one as fallback
         if [ -z "$OLD_ACCESS_KEY_ID" ] || [ "$OLD_ACCESS_KEY_ID" = "null" ]; then
-          echo "::error::Could not extract access key ID from response"
-          exit 1
+          echo "⚠️  WARNING: The access key used for authentication ($AWS_ACCESS_KEY_ID) was not found in the user's key list."
+          echo "    Using the first key in the list as the key to delete."
+          OLD_ACCESS_KEY_ID=$(echo "$EXISTING_KEYS" | jq -r '.[0].AccessKeyId // empty')
+          if [ -z "$OLD_ACCESS_KEY_ID" ] || [ "$OLD_ACCESS_KEY_ID" = "null" ]; then
+            echo "::error::Could not extract access key ID from response"
+            exit 1
+          fi
         fi
         
-        echo "  ✓ Old Access Key ID to delete: $OLD_ACCESS_KEY_ID"
+        echo "  ✓ Current Access Key ID (to be replaced): $OLD_ACCESS_KEY_ID"
         
         # Check if we're trying to delete the key we're currently using
         if [ "$OLD_ACCESS_KEY_ID" = "$AWS_ACCESS_KEY_ID" ]; then
@@ -166,18 +180,107 @@ runs:
           echo "    This is expected during rotation, but ensure the new key is saved before deletion."
         fi
         
+        # Step 1.5: If there are multiple keys, delete the unused ones first
+        if [ "$KEY_COUNT" -ge 2 ]; then
+          echo ""
+          echo "Step 1.5: Cleaning up unused access keys..."
+          echo "  User '$IAM_USERNAME' has $KEY_COUNT access key(s) (AWS limit is 2)."
+          echo "  Existing keys:"
+          echo "$EXISTING_KEYS" | jq -r '.[] | "    - \(.AccessKeyId) (Status: \(.Status), Created: \(.CreateDate))"'
+          echo ""
+          echo "  Deleting unused key(s) (not the one used for authentication)..."
+          
+          # Find and delete all keys that are NOT the one being used for authentication
+          DELETED_COUNT=0
+          for i in $(seq 0 $((KEY_COUNT - 1))); do
+            KEY_ID=$(echo "$EXISTING_KEYS" | jq -r ".[$i].AccessKeyId")
+            if [ "$KEY_ID" != "$AWS_ACCESS_KEY_ID" ]; then
+              echo "    Deleting unused access key: $KEY_ID"
+              DELETE_UNUSED_RESPONSE=$(aws iam delete-access-key \
+                --user-name "$IAM_USERNAME" \
+                --access-key-id "$KEY_ID" \
+                --output json 2>&1) || {
+                DELETE_UNUSED_EXIT_CODE=$?
+                echo "::error::Failed to delete unused access key '$KEY_ID' (exit code: $DELETE_UNUSED_EXIT_CODE)"
+                echo "Response: $DELETE_UNUSED_RESPONSE"
+                exit 1
+              }
+              echo "      ✓ Successfully deleted unused access key '$KEY_ID'"
+              DELETED_COUNT=$((DELETED_COUNT + 1))
+            fi
+          done
+          
+          if [ $DELETED_COUNT -eq 0 ]; then
+            echo "::error::Could not find any unused access keys to delete."
+            echo "    All existing keys match the authentication key, or key extraction failed."
+            exit 1
+          fi
+          
+          echo "  ✓ Deleted $DELETED_COUNT unused access key(s)"
+          echo ""
+          echo "  Waiting for AWS to process the deletion (5 seconds)..."
+          sleep 5
+          
+          # Verify that only the current key remains
+          echo "  Verifying that only the current key remains..."
+          MAX_VERIFY_RETRIES=5
+          VERIFY_RETRY_COUNT=0
+          VERIFY_SUCCESS=false
+          
+          while [ $VERIFY_RETRY_COUNT -lt $MAX_VERIFY_RETRIES ]; do
+            VERIFY_RETRY_COUNT=$((VERIFY_RETRY_COUNT + 1))
+            VERIFY_LIST_RESPONSE=$(aws iam list-access-keys \
+              --user-name "$IAM_USERNAME" \
+              --output json 2>&1) || {
+              echo "    ⚠️  Warning: Failed to verify keys (attempt $VERIFY_RETRY_COUNT/$MAX_VERIFY_RETRIES)"
+              if [ $VERIFY_RETRY_COUNT -lt $MAX_VERIFY_RETRIES ]; then
+                sleep 2
+                continue
+              else
+                echo "::error::Failed to verify keys after deletion"
+                exit 1
+              fi
+            }
+            
+            VERIFY_KEYS=$(echo "$VERIFY_LIST_RESPONSE" | jq -r '.AccessKeyMetadata // []')
+            VERIFY_KEY_COUNT=$(echo "$VERIFY_KEYS" | jq 'length')
+            
+            if [ "$VERIFY_KEY_COUNT" -eq 1 ]; then
+              VERIFY_KEY_ID=$(echo "$VERIFY_KEYS" | jq -r '.[0].AccessKeyId')
+              if [ "$VERIFY_KEY_ID" = "$AWS_ACCESS_KEY_ID" ]; then
+                echo "    ✓ Verified: Only the current access key remains ($VERIFY_KEY_ID)"
+                VERIFY_SUCCESS=true
+                break
+              else
+                echo "    ⚠️  Warning: Only one key remains, but it's not the expected one (attempt $VERIFY_RETRY_COUNT/$MAX_VERIFY_RETRIES)"
+                if [ $VERIFY_RETRY_COUNT -lt $MAX_VERIFY_RETRIES ]; then
+                  sleep 2
+                  continue
+                fi
+              fi
+            else
+              echo "    ⚠️  Warning: Still $VERIFY_KEY_COUNT key(s) remaining (expected 1) (attempt $VERIFY_RETRY_COUNT/$MAX_VERIFY_RETRIES)"
+              if [ $VERIFY_RETRY_COUNT -lt $MAX_VERIFY_RETRIES ]; then
+                sleep 2
+                continue
+              fi
+            fi
+          done
+          
+          if [ "$VERIFY_SUCCESS" != "true" ]; then
+            echo "::error::Verification failed: Expected only 1 key (the current one), but found $VERIFY_KEY_COUNT key(s)"
+            echo "    Remaining keys:"
+            echo "$VERIFY_KEYS" | jq -r '.[] | "      - \(.AccessKeyId)"'
+            exit 1
+          fi
+          
+          echo ""
+          echo "  ✅ Cleanup complete. Only the current access key remains. Proceeding with rotation..."
+        fi
+        
         # Step 2: Create new access key
         echo ""
         echo "Step 2: Creating new access key for user '$IAM_USERNAME'..."
-        
-        # Check if user already has 2 keys (AWS limit)
-        if [ "$KEY_COUNT" -ge 2 ]; then
-          echo "::error::User '$IAM_USERNAME' already has 2 access keys (AWS limit)."
-          echo "    You must delete one key before creating a new one."
-          echo "    Existing keys:"
-          echo "$EXISTING_KEYS" | jq -r '.[] | "      - \(.AccessKeyId) (Status: \(.Status), Created: \(.CreateDate))"'
-          exit 1
-        fi
         
         # Create new access key
         # Note: The --use-case parameter is not available in all AWS CLI versions
